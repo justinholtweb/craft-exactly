@@ -1,0 +1,75 @@
+{% extends '_layouts/cp' %}
+
+{% set title = entry.action %}
+{% set selectedSubnavItem = 'log' %}
+{% set crumbs = [
+    { label: 'Exactly'|t('exactly'), url: url('exactly/documents') },
+    { label: 'Log'|t('exactly'), url: url('exactly/log') }
+] %}
+
+{% block content %}
+    <div class="pane">
+        <table class="data fullwidth">
+            <tbody>
+                <tr>
+                    <th scope="row" style="width: 200px;">{{ 'When'|t('exactly') }}</th>
+                    <td>{{ entry.dateCreated ? entry.dateCreated|datetime('long') : '—' }}</td>
+                </tr>
+                <tr>
+                    <th scope="row">{{ 'Level'|t('exactly') }}</th>
+                    <td>
+                        <span class="status {{ entry.getStatusColor() }}"></span>
+                        {{ entry.level }}
+                    </td>
+                </tr>
+                <tr>
+                    <th scope="row">{{ 'Request'|t('exactly') }}</th>
+                    <td class="code">{{ entry.method ? entry.method ~ ' ' : '' }}{{ entry.endpoint ?? '—' }}</td>
+                </tr>
+                <tr>
+                    <th scope="row">{{ 'HTTP status'|t('exactly') }}</th>
+                    <td>{{ entry.statusCode ?? '—' }}</td>
+                </tr>
+                <tr>
+                    <th scope="row">{{ 'Duration'|t('exactly') }}</th>
+                    <td>{{ entry.durationMs is not null ? entry.durationMs ~ 'ms' : '—' }}</td>
+                </tr>
+                <tr>
+                    <th scope="row">{{ 'Order'|t('exactly') }}</th>
+                    <td>{{ entry.orderId ?? '—' }}</td>
+                </tr>
+                <tr>
+                    <th scope="row">{{ 'Division'|t('exactly') }}</th>
+                    <td>{{ entry.division ?? '—' }}</td>
+                </tr>
+                <tr>
+                    <th scope="row">{{ 'Summary'|t('exactly') }}</th>
+                    <td>{{ entry.summary ?? '—' }}</td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+
+    {% if entry.message %}
+        <h2>{{ 'Message'|t('exactly') }}</h2>
+        <div class="pane">
+            <pre style="white-space: pre-wrap; margin: 0;">{{ entry.message }}</pre>
+        </div>
+    {% endif %}
+
+    {% set request = entry.prettyBody(entry.request) %}
+    {% if request %}
+        <h2>{{ 'Sent'|t('exactly') }}</h2>
+        <div class="pane">
+            <pre style="overflow-x: auto; margin: 0;">{{ request }}</pre>
+        </div>
+    {% endif %}
+
+    {% set response = entry.prettyBody(entry.response) %}
+    {% if response %}
+        <h2>{{ 'Received'|t('exactly') }}</h2>
+        <div class="pane">
+            <pre style="overflow-x: auto; margin: 0;">{{ response }}</pre>
+        </div>
+    {% endif %}
+{% endblock %}

@@ -1,0 +1,201 @@
+{% extends '_layouts/cp' %}
+{% import '_includes/forms' as forms %}
+
+{% set title = 'Exact Online documents'|t('exactly') %}
+{% set selectedSubnavItem = 'documents' %}
+
+{% block actionButton %}
+    <div class="buttons">
+        <button type="button" class="btn" id="exactly-backfill">{{ 'Backfill'|t('exactly') }}</button>
+        <button type="button" class="btn" id="exactly-retry">{{ 'Retry failures'|t('exactly') }}</button>
+        {% if isPro %}
+            <button type="button" class="btn" id="exactly-payments">{{ 'Check payments'|t('exactly') }}</button>
+        {% endif %}
+    </div>
+{% endblock %}
+
+{% block content %}
+    <div class="pane" style="margin-bottom: 16px;">
+        <p>
+            <span class="status {{ summary.connected ? 'green' : 'red' }}"></span>
+            {% if summary.connected %}
+                {{ 'Connected — division {division}, invoicing {trigger}.'|t('exactly', {
+                    division: summary.division ?? '?',
+                    trigger: summary.trigger
+                }) }}
+                {% if summary.daysUntilExpiry is not null %}
+                    <span class="light">{{ 'Reconnect within {days} days.'|t('exactly', { days: summary.daysUntilExpiry }) }}</span>
+                {% endif %}
+            {% else %}
+                {{ 'Not connected to Exact Online.'|t('exactly') }}
+                {% if currentUser and currentUser.admin %}
+                    <a href="{{ url('settings/plugins/exactly') }}">{{ 'Settings'|t('exactly') }}</a>
+                {% endif %}
+            {% endif %}
+        </p>
+    </div>
+
+    <div class="flex" style="margin-bottom: 14px; gap: 10px; align-items: center;">
+        {{ forms.select({
+            id: 'exactly-status-filter',
+            name: 'status',
+            options: [
+                { label: 'All statuses'|t('exactly'), value: '' },
+                { label: 'Sent'|t('exactly'), value: 'sent' },
+                { label: 'Failed'|t('exactly'), value: 'failed' },
+                { label: 'Queued'|t('exactly'), value: 'queued' },
+                { label: 'Sending'|t('exactly'), value: 'sending' },
+                { label: 'Pending'|t('exactly'), value: 'pending' },
+                { label: 'Skipped'|t('exactly'), value: 'skipped' }
+            ],
+            value: criteria.status ?? ''
+        }) }}
+
+        {{ forms.select({
+            id: 'exactly-kind-filter',
+            name: 'kind',
+            options: [
+                { label: 'Invoices and credit notes'|t('exactly'), value: '' },
+                { label: 'Invoices'|t('exactly'), value: 'invoice' },
+                { label: 'Credit notes'|t('exactly'), value: 'credit-note' }
+            ],
+            value: criteria.kind ?? ''
+        }) }}
+
+        {{ forms.text({
+            id: 'exactly-search',
+            name: 'search',
+            placeholder: 'Order or invoice number'|t('exactly'),
+            value: criteria.search ?? ''
+        }) }}
+
+        <span class="light">
+            {{ '{total} documents'|t('exactly', { total: total }) }}
+            {% if counts.failed ?? 0 %}
+                — <span class="error">{{ '{count} failed'|t('exactly', { count: counts.failed }) }}</span>
+            {% endif %}
+        </span>
+    </div>
+
+    {% if documents|length %}
+        <table class="data fullwidth">
+            <thead>
+                <tr>
+                    <th scope="col">{{ 'Order'|t('exactly') }}</th>
+                    <th scope="col">{{ 'Document'|t('exactly') }}</th>
+                    <th scope="col">{{ 'Status'|t('exactly') }}</th>
+                    <th scope="col">{{ 'VAT'|t('exactly') }}</th>
+                    <th scope="col">{{ 'Amount'|t('exactly') }}</th>
+                    <th scope="col">{{ 'Payment'|t('exactly') }}</th>
+                    <th scope="col">{{ 'When'|t('exactly') }}</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for document in documents %}
+                    <tr>
+                        <td class="nowrap">
+                            <a href="{{ url('exactly/documents/' ~ document.id) }}">
+                                {{ document.orderNumber ?? ('#' ~ document.orderId) }}
+                            </a>
+                        </td>
+                        <td>
+                            {{ document.invoiceNumber ?? '—' }}
+                            {% if document.kind == 'credit-note' %}
+                                <span class="light">{{ 'credit'|t('exactly') }}</span>
+                            {% endif %}
+                        </td>
+                        <td class="nowrap">
+                            <span class="status {{ document.getStatusColor() }}"></span>
+                            {{ document.getStatusLabel() }}
+                            {% if document.attempts > 1 %}
+                                <span class="light">×{{ document.attempts }}</span>
+                            {% endif %}
+                        </td>
+                        <td class="light">{{ document.vatTreatment ?? '—' }}</td>
+                        <td class="nowrap">
+                            {{ document.amount is not null ? document.amount|currency(document.currency ?? 'EUR') : '—' }}
+                        </td>
+                        <td class="light">{{ document.paymentStatus ?? '—' }}</td>
+                        <td class="nowrap light">
+                            {{ document.dateSent ? document.dateSent|datetime('short') : (document.dateCreated ? document.dateCreated|datetime('short') : '—') }}
+                        </td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+
+        {% if total > perPage %}
+            <div class="flex" style="margin-top: 14px; gap: 10px;">
+                {% if page > 1 %}
+                    <a class="btn" href="{{ url('exactly/documents', { page: page - 1, status: criteria.status, kind: criteria.kind, search: criteria.search }) }}">{{ 'Previous'|t('exactly') }}</a>
+                {% endif %}
+                {% if page * perPage < total %}
+                    <a class="btn" href="{{ url('exactly/documents', { page: page + 1, status: criteria.status, kind: criteria.kind, search: criteria.search }) }}">{{ 'Next'|t('exactly') }}</a>
+                {% endif %}
+            </div>
+        {% endif %}
+    {% else %}
+        <div class="zilch">
+            <p>{{ 'Nothing here yet.'|t('exactly') }}</p>
+            <p class="light">{{ 'Send an order from its edit screen, or use Backfill to queue everything that has never been invoiced.'|t('exactly') }}</p>
+        </div>
+    {% endif %}
+{% endblock %}
+
+{% js %}
+(function() {
+    function reload() {
+        var url = new URL(window.location.href);
+        [['exactly-status-filter', 'status'], ['exactly-kind-filter', 'kind'], ['exactly-search', 'search']].forEach(function(pair) {
+            var el = document.getElementById(pair[0]);
+            if (el && el.value) { url.searchParams.set(pair[1], el.value); }
+            else { url.searchParams.delete(pair[1]); }
+        });
+        url.searchParams.delete('page');
+        window.location.href = url.toString();
+    }
+
+    ['exactly-status-filter', 'exactly-kind-filter'].forEach(function(id) {
+        var el = document.getElementById(id);
+        if (el) { el.addEventListener('change', reload); }
+    });
+
+    var search = document.getElementById('exactly-search');
+    if (search) {
+        search.addEventListener('keydown', function(event) {
+            if (event.key === 'Enter') { event.preventDefault(); reload(); }
+        });
+    }
+
+    function post(action, data, confirmText) {
+        if (confirmText && !confirm(confirmText)) { return; }
+        Craft.sendActionRequest('POST', action, { data: data || {} })
+            .then(function(response) {
+                Craft.cp.displayNotice(response.data.message);
+                window.location.reload();
+            })
+            .catch(function(error) {
+                var message = (error && error.response && error.response.data && error.response.data.message)
+                    || {{ 'Something went wrong.'|t('exactly')|json_encode|raw }};
+                Craft.cp.displayError(message);
+            });
+    }
+
+    var backfill = document.getElementById('exactly-backfill');
+    if (backfill) {
+        backfill.addEventListener('click', function() {
+            post('exactly/documents/backfill', { limit: 100 }, {{ 'Queue up to 100 orders that have never been invoiced?'|t('exactly')|json_encode|raw }});
+        });
+    }
+
+    var retry = document.getElementById('exactly-retry');
+    if (retry) {
+        retry.addEventListener('click', function() { post('exactly/documents/retry'); });
+    }
+
+    var payments = document.getElementById('exactly-payments');
+    if (payments) {
+        payments.addEventListener('click', function() { post('exactly/documents/sync-payments'); });
+    }
+})();
+{% endjs %}

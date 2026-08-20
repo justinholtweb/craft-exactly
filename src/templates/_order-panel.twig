@@ -1,0 +1,135 @@
+{# Rendered into Commerce's own order edit screen through the `cp.commerce.order.edit.details`
+   hook, which means this markup sits *inside* Craft's page form. Nothing here may be a `<form>`
+   and nothing may be named `action`: a nested form's children survive its dropped tag, and a
+   second `action` input would make Save run whatever this panel posts. #}
+{% set invoice = null %}
+{% set credits = [] %}
+{% for document in documents %}
+    {% if document.kind == 'invoice' and invoice is null %}
+        {% set invoice = document %}
+    {% elseif document.kind == 'credit-note' %}
+        {% set credits = credits|merge([document]) %}
+    {% endif %}
+{% endfor %}
+
+<div class="order-flex" id="exactly-panel" style="flex-direction: column; gap: 8px;">
+    <h3 style="margin-bottom: 0;">{{ 'Exact Online'|t('exactly') }}</h3>
+
+    {% if not connected %}
+        <p class="light">
+            {{ 'Not connected.'|t('exactly') }}
+            {% if currentUser and currentUser.admin %}
+                <a href="{{ url('settings/plugins/exactly') }}">{{ 'Connect'|t('exactly') }}</a>
+            {% endif %}
+        </p>
+    {% elseif invoice is null %}
+        <p class="light">{{ 'This order has not been invoiced yet.'|t('exactly') }}</p>
+    {% else %}
+        <p>
+            <span class="status {{ invoice.getStatusColor() }}"></span>
+            <strong>{{ invoice.getLabel() }}</strong>
+            <span class="light">{{ invoice.getStatusLabel() }}</span>
+        </p>
+
+        {% if invoice.dateSent %}
+            <p class="light">{{ 'Sent {date}'|t('exactly', { date: invoice.dateSent|datetime('short') }) }}</p>
+        {% endif %}
+
+        {% if invoice.vatTreatment %}
+            <p class="light">{{ 'VAT treatment: {treatment}'|t('exactly', { treatment: invoice.vatTreatment }) }}</p>
+        {% endif %}
+
+        {% if invoice.paymentStatus %}
+            <p class="light">{{ 'Payment: {status}'|t('exactly', { status: invoice.paymentStatus }) }}</p>
+        {% endif %}
+
+        {% if invoice.deliveryStatus %}
+            <p class="light">{{ 'Delivery: {status}'|t('exactly', { status: invoice.deliveryStatus }) }}</p>
+        {% endif %}
+
+        {% if invoice.lastError %}
+            <p class="error" style="white-space: pre-wrap;">{{ invoice.lastError }}</p>
+        {% endif %}
+
+        <p><a href="{{ url('exactly/documents/' ~ invoice.id) }}">{{ 'Open the record'|t('exactly') }}</a></p>
+    {% endif %}
+
+    {% for credit in credits %}
+        <p>
+            <span class="status {{ credit.getStatusColor() }}"></span>
+            {{ credit.getLabel() }}
+        </p>
+    {% endfor %}
+
+    <div class="buttons" style="margin: 0;">
+        <a class="btn" href="{{ url('exactly/documents/preview/' ~ order.id) }}">{{ 'Preview payload'|t('exactly') }}</a>
+
+        {% if canPush and connected %}
+            <button type="button" class="btn" data-exactly-push="{{ invoice and invoice.isSent() ? 'force' : 'normal' }}">
+                {{ invoice and invoice.isSent() ? 'Send again'|t('exactly') : 'Send to Exact Online'|t('exactly') }}
+            </button>
+            <button type="button" class="btn" id="exactly-queue">{{ 'Queue it'|t('exactly') }}</button>
+        {% endif %}
+
+        {% if canCredit and isPro and invoice and invoice.isSent() %}
+            <button type="button" class="btn" id="exactly-credit">{{ 'Credit note'|t('exactly') }}</button>
+        {% endif %}
+    </div>
+</div>
+
+{% js %}
+(function() {
+    var orderId = {{ order.id }};
+
+    function post(action, data, done) {
+        Craft.sendActionRequest('POST', action, { data: data })
+            .then(function(response) { done(response.data); })
+            .catch(function(error) {
+                var message = (error && error.response && error.response.data && error.response.data.message)
+                    || {{ 'Something went wrong.'|t('exactly')|json_encode|raw }};
+                Craft.cp.displayError(message);
+            });
+    }
+
+    function report(data) {
+        if (!data) { return; }
+        if (data.success) {
+            Craft.cp.displayNotice(data.message);
+            (data.warnings || []).forEach(function(warning) { Craft.cp.displayError(warning); });
+            window.location.reload();
+        } else {
+            Craft.cp.displayError(data.message);
+        }
+    }
+
+    var pushButton = document.querySelector('[data-exactly-push]');
+    if (pushButton) {
+        pushButton.addEventListener('click', function() {
+            var force = pushButton.getAttribute('data-exactly-push') === 'force';
+            if (force && !confirm({{ 'This order already has an Exact Online invoice. Sending it again creates a second one. Continue?'|t('exactly')|json_encode|raw }})) {
+                return;
+            }
+            pushButton.classList.add('disabled');
+            post('exactly/documents/push', { orderId: orderId, force: force ? 1 : 0 }, function(data) {
+                pushButton.classList.remove('disabled');
+                report(data);
+            });
+        });
+    }
+
+    var queueButton = document.getElementById('exactly-queue');
+    if (queueButton) {
+        queueButton.addEventListener('click', function() {
+            post('exactly/documents/queue', { orderId: orderId }, report);
+        });
+    }
+
+    var creditButton = document.getElementById('exactly-credit');
+    if (creditButton) {
+        creditButton.addEventListener('click', function() {
+            if (!confirm({{ 'Issue a credit note in Exact Online for this order?'|t('exactly')|json_encode|raw }})) { return; }
+            post('exactly/documents/credit', { orderId: orderId }, report);
+        });
+    }
+})();
+{% endjs %}

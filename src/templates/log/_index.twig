@@ -1,0 +1,130 @@
+{% extends '_layouts/cp' %}
+{% import '_includes/forms' as forms %}
+
+{% set title = 'Connection log'|t('exactly') %}
+{% set selectedSubnavItem = 'log' %}
+
+{% block actionButton %}
+    <div class="buttons">
+        <button type="button" class="btn" id="exactly-prune">{{ 'Prune old entries'|t('exactly') }}</button>
+        <button type="button" class="btn" id="exactly-clear">{{ 'Clear'|t('exactly') }}</button>
+    </div>
+{% endblock %}
+
+{% block content %}
+    <div class="flex" style="margin-bottom: 14px; gap: 10px; align-items: center;">
+        {% set actionOptions = [{ label: 'All actions'|t('exactly'), value: '' }] %}
+        {% for action in actions %}
+            {% set actionOptions = actionOptions|merge([{ label: action, value: action }]) %}
+        {% endfor %}
+
+        {# The filter cannot be named `action`: that is Craft's own routing parameter, and a select
+           called that overwrites `action=exactly/log/index` with its own value. The request then
+           404s on a route nobody wrote, before any controller runs. #}
+        {{ forms.select({
+            id: 'exactly-action-filter',
+            name: 'logAction',
+            options: actionOptions,
+            value: criteria.action ?? ''
+        }) }}
+
+        {{ forms.select({
+            id: 'exactly-level-filter',
+            name: 'level',
+            options: [
+                { label: 'All levels'|t('exactly'), value: '' },
+                { label: 'Info'|t('exactly'), value: 'info' },
+                { label: 'Warning'|t('exactly'), value: 'warning' },
+                { label: 'Error'|t('exactly'), value: 'error' }
+            ],
+            value: criteria.level ?? ''
+        }) }}
+
+        <span class="light">
+            {{ '{total} entries'|t('exactly', { total: total }) }}
+            {% if errors %}
+                — <span class="error">{{ '{count} errors'|t('exactly', { count: errors }) }}</span>
+            {% endif %}
+        </span>
+    </div>
+
+    {% if entries|length %}
+        <table class="data fullwidth">
+            <thead>
+                <tr>
+                    <th scope="col">{{ 'When'|t('exactly') }}</th>
+                    <th scope="col">{{ 'Action'|t('exactly') }}</th>
+                    <th scope="col">{{ 'Endpoint'|t('exactly') }}</th>
+                    <th scope="col">{{ 'Status'|t('exactly') }}</th>
+                    <th scope="col">{{ 'Time'|t('exactly') }}</th>
+                    <th scope="col">{{ 'Summary'|t('exactly') }}</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for entry in entries %}
+                    <tr>
+                        <td class="nowrap">
+                            <a href="{{ url('exactly/log/' ~ entry.id) }}">
+                                {{ entry.dateCreated ? entry.dateCreated|datetime('short') : '—' }}
+                            </a>
+                        </td>
+                        <td>{{ entry.action }}</td>
+                        <td class="code light">{{ entry.method ? entry.method ~ ' ' : '' }}{{ entry.endpoint ?? '' }}</td>
+                        <td class="nowrap">
+                            <span class="status {{ entry.getStatusColor() }}"></span>
+                            {{ entry.statusCode ?? '—' }}
+                        </td>
+                        <td class="light">{{ entry.durationMs is not null ? entry.durationMs ~ 'ms' : '—' }}</td>
+                        <td>{{ entry.summary ?? '' }}</td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    {% else %}
+        <div class="zilch">
+            <p>{{ 'Nothing logged yet.'|t('exactly') }}</p>
+            <p class="light">{{ 'Every call Exactly makes to Exact Online lands here, with the payload and the response.'|t('exactly') }}</p>
+        </div>
+    {% endif %}
+{% endblock %}
+
+{% js %}
+(function() {
+    function reload() {
+        var url = new URL(window.location.href);
+        [['exactly-action-filter', 'logAction'], ['exactly-level-filter', 'level']].forEach(function(pair) {
+            var el = document.getElementById(pair[0]);
+            if (el && el.value) { url.searchParams.set(pair[1], el.value); }
+            else { url.searchParams.delete(pair[1]); }
+        });
+        window.location.href = url.toString();
+    }
+
+    ['exactly-action-filter', 'exactly-level-filter'].forEach(function(id) {
+        var el = document.getElementById(id);
+        if (el) { el.addEventListener('change', reload); }
+    });
+
+    function post(action, confirmText) {
+        if (confirmText && !confirm(confirmText)) { return; }
+        Craft.sendActionRequest('POST', action)
+            .then(function(response) {
+                Craft.cp.displayNotice(response.data.message);
+                window.location.reload();
+            })
+            .catch(function() {
+                Craft.cp.displayError({{ 'Couldn’t change the log.'|t('exactly')|json_encode|raw }});
+            });
+    }
+
+    var prune = document.getElementById('exactly-prune');
+    if (prune) { prune.addEventListener('click', function() { post('exactly/log/prune'); }); }
+
+    var clear = document.getElementById('exactly-clear');
+    if (clear) {
+        clear.addEventListener('click', function() {
+            post('exactly/log/clear', {{ 'Delete every log entry?'|t('exactly')|json_encode|raw }});
+        });
+    }
+})();
+{% endjs %}

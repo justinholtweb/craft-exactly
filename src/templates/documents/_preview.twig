@@ -1,0 +1,96 @@
+{% extends '_layouts/cp' %}
+
+{% set title = 'Invoice preview'|t('exactly') %}
+{% set selectedSubnavItem = 'documents' %}
+{% set crumbs = [
+    { label: 'Exactly'|t('exactly'), url: url('exactly/documents') },
+    { label: 'Documents'|t('exactly'), url: url('exactly/documents') }
+] %}
+
+{% block content %}
+    <div class="pane" style="margin-bottom: 16px;">
+        <p>
+            {{ 'Order'|t('exactly') }}
+            <a href="{{ order.getCpEditUrl() }}"><strong>{{ order.reference ?? order.getShortNumber() }}</strong></a>
+            — {{ order.getTotalPrice()|currency(order.currency) }}
+        </p>
+        <p class="light">
+            {{ 'This is built by the same code that does the sending, so it is what Exact Online would actually receive. Nothing has been created in Exact by opening this page.'|t('exactly') }}
+        </p>
+    </div>
+
+    {% if error %}
+        <div class="pane">
+            <p class="error" style="white-space: pre-wrap;">{{ error }}</p>
+        </div>
+    {% else %}
+        {% set totals = built.totals %}
+        {% set balanced = totals.delta|abs < 0.005 %}
+
+        <div class="pane" style="margin-bottom: 16px;">
+            <h2 style="margin-top: 0;">{{ 'Reconciliation'|t('exactly') }}</h2>
+            <table class="data fullwidth">
+                <tbody>
+                    <tr>
+                        <th scope="row" style="width: 260px;">{{ 'VAT treatment'|t('exactly') }}</th>
+                        <td>
+                            <strong>{{ built.treatment.treatment }}</strong>
+                            {% if built.treatment.vatNumber %}
+                                <span class="light code">{{ built.treatment.vatNumber }}</span>
+                            {% endif %}
+                            {% if built.treatment.countryCode %}
+                                <span class="light">→ {{ built.treatment.countryCode }}</span>
+                            {% endif %}
+                            {% if built.treatment.sellerCountry %}
+                                <span class="light">({{ 'from'|t('exactly') }} {{ built.treatment.sellerCountry }})</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    <tr>
+                        <th scope="row">{{ 'Lines excluding VAT'|t('exactly') }}</th>
+                        <td>{{ totals.subtotalExVat|currency(totals.currency ?: 'EUR') }}</td>
+                    </tr>
+                    <tr>
+                        <th scope="row">{{ 'VAT Exact will add'|t('exactly') }}</th>
+                        <td>{{ totals.expectedVat|currency(totals.currency ?: 'EUR') }}</td>
+                    </tr>
+                    <tr>
+                        <th scope="row">{{ 'Invoice total'|t('exactly') }}</th>
+                        <td><strong>{{ totals.expectedTotal|currency(totals.currency ?: 'EUR') }}</strong></td>
+                    </tr>
+                    <tr>
+                        <th scope="row">{{ 'The customer paid'|t('exactly') }}</th>
+                        <td>{{ totals.chargedTotal|currency(totals.currency ?: 'EUR') }}</td>
+                    </tr>
+                    <tr>
+                        <th scope="row">{{ 'Difference'|t('exactly') }}</th>
+                        <td>
+                            <span class="status {{ balanced ? 'green' : 'orange' }}"></span>
+                            {{ totals.delta|currency(totals.currency ?: 'EUR') }}
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        {% if built.warnings|length %}
+            <div class="pane" style="margin-bottom: 16px;">
+                <h2 style="margin-top: 0;">{{ 'Worth knowing'|t('exactly') }}</h2>
+                <ul>
+                    {% for warning in built.warnings %}
+                        <li>{{ warning }}</li>
+                    {% endfor %}
+                </ul>
+            </div>
+        {% endif %}
+
+        <h2>{{ 'Payload'|t('exactly') }}</h2>
+        <div class="pane">
+            <pre style="overflow-x: auto; margin: 0;">{{ json }}</pre>
+        </div>
+    {% endif %}
+
+    <div class="buttons" style="margin-top: 16px;">
+        <a class="btn" href="{{ order.getCpEditUrl() }}">{{ 'Back to the order'|t('exactly') }}</a>
+    </div>
+{% endblock %}

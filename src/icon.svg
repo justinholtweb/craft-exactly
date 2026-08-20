@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" role="img" aria-label="Exactly">
+  <!-- An invoice sheet with a folded corner, ruled lines, and a tick where the total goes.
+       Monochrome and filled: Craft masks CP nav icons, so anything relying on colour or on a
+       stroke that scales disappears at 16px. -->
+  <path fill="currentColor" d="M18 8h40l24 24v60a4 4 0 0 1-4 4H18a4 4 0 0 1-4-4V12a4 4 0 0 1 4-4Zm40 8.5V30a2 2 0 0 0 2 2h13.5L58 16.5Z"/>
+  <rect x="26" y="42" width="34" height="6" rx="3" fill="#fff"/>
+  <rect x="26" y="55" width="26" height="6" rx="3" fill="#fff"/>
+  <path fill="#fff" d="M44.7 82.6 34 71.9l5.7-5.7 5 5 14.9-14.9 5.7 5.7-20.6 20.6Z"/>
+</svg>

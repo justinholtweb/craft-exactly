@@ -1,0 +1,164 @@
+{% extends '_layouts/cp' %}
+
+{% set title = document.getLabel() %}
+{% set selectedSubnavItem = 'documents' %}
+{% set crumbs = [
+    { label: 'Exactly'|t('exactly'), url: url('exactly/documents') },
+    { label: 'Documents'|t('exactly'), url: url('exactly/documents') }
+] %}
+
+{% block content %}
+    <div class="pane">
+        <table class="data fullwidth">
+            <tbody>
+                <tr>
+                    <th scope="row" style="width: 200px;">{{ 'Status'|t('exactly') }}</th>
+                    <td>
+                        <span class="status {{ document.getStatusColor() }}"></span>
+                        {{ document.getStatusLabel() }}
+                        {% if document.attempts %}
+                            <span class="light">{{ '{count} attempts'|t('exactly', { count: document.attempts }) }}</span>
+                        {% endif %}
+                    </td>
+                </tr>
+                <tr>
+                    <th scope="row">{{ 'Order'|t('exactly') }}</th>
+                    <td>
+                        {% if order %}
+                            <a href="{{ order.getCpEditUrl() }}">{{ document.orderNumber ?? order.reference }}</a>
+                        {% else %}
+                            <span class="light">{{ 'The order has been deleted.'|t('exactly') }}</span>
+                        {% endif %}
+                    </td>
+                </tr>
+                <tr>
+                    <th scope="row">{{ 'Kind'|t('exactly') }}</th>
+                    <td>{{ document.kind == 'credit-note' ? 'Credit note'|t('exactly') : 'Sales invoice'|t('exactly') }}</td>
+                </tr>
+                <tr>
+                    <th scope="row">{{ 'Division'|t('exactly') }}</th>
+                    <td>{{ document.division }}</td>
+                </tr>
+                <tr>
+                    <th scope="row">{{ 'Invoice number'|t('exactly') }}</th>
+                    <td class="code">{{ document.invoiceNumber ?? '—' }}</td>
+                </tr>
+                <tr>
+                    <th scope="row">{{ 'Exact invoice ID'|t('exactly') }}</th>
+                    <td class="code">{{ document.exactInvoiceId ?? '—' }}</td>
+                </tr>
+                <tr>
+                    <th scope="row">{{ 'Journal'|t('exactly') }}</th>
+                    <td>{{ document.journal ?? '—' }}</td>
+                </tr>
+                <tr>
+                    <th scope="row">{{ 'Amount'|t('exactly') }}</th>
+                    <td>
+                        {{ document.amount is not null ? document.amount|currency(document.currency ?? 'EUR') : '—' }}
+                        {% if document.amountExclVat is not null %}
+                            <span class="light">({{ document.amountExclVat|currency(document.currency ?? 'EUR') }} {{ 'ex VAT'|t('exactly') }})</span>
+                        {% endif %}
+                    </td>
+                </tr>
+                <tr>
+                    <th scope="row">{{ 'VAT treatment'|t('exactly') }}</th>
+                    <td>{{ document.vatTreatment ?? '—' }}</td>
+                </tr>
+                <tr>
+                    <th scope="row">{{ 'Payment'|t('exactly') }}</th>
+                    <td>
+                        {{ document.paymentStatus ?? '—' }}
+                        {% if document.amountPaid is not null %}
+                            <span class="light">{{ document.amountPaid|currency(document.currency ?? 'EUR') }}</span>
+                        {% endif %}
+                    </td>
+                </tr>
+                <tr>
+                    <th scope="row">{{ 'Delivery'|t('exactly') }}</th>
+                    <td>{{ document.deliveryStatus ?? '—' }}</td>
+                </tr>
+                <tr>
+                    <th scope="row">{{ 'Invoice date'|t('exactly') }}</th>
+                    <td>{{ document.dateInvoiced ? document.dateInvoiced|date('short') : '—' }}</td>
+                </tr>
+                <tr>
+                    <th scope="row">{{ 'Sent'|t('exactly') }}</th>
+                    <td>{{ document.dateSent ? document.dateSent|datetime('short') : '—' }}</td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+
+    {% if document.lastError %}
+        <h2>{{ 'Last error'|t('exactly') }}</h2>
+        <div class="pane">
+            <pre style="white-space: pre-wrap; margin: 0;">{{ document.lastError }}</pre>
+        </div>
+    {% endif %}
+
+    {% set payload = document.getDecodedPayload() %}
+    {% if payload %}
+        <h2>{{ 'What was sent'|t('exactly') }}</h2>
+        <div class="pane">
+            <pre style="overflow-x: auto; margin: 0;">{{ payload|json_encode(constant('JSON_PRETTY_PRINT') b-or constant('JSON_UNESCAPED_SLASHES') b-or constant('JSON_UNESCAPED_UNICODE')) }}</pre>
+        </div>
+    {% endif %}
+
+    {% if entries|length %}
+        <h2>{{ 'Related log entries'|t('exactly') }}</h2>
+        <table class="data fullwidth">
+            <thead>
+                <tr>
+                    <th scope="col">{{ 'When'|t('exactly') }}</th>
+                    <th scope="col">{{ 'Action'|t('exactly') }}</th>
+                    <th scope="col">{{ 'Status'|t('exactly') }}</th>
+                    <th scope="col">{{ 'Summary'|t('exactly') }}</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for entry in entries %}
+                    <tr>
+                        <td class="nowrap">
+                            <a href="{{ url('exactly/log/' ~ entry.id) }}">{{ entry.dateCreated ? entry.dateCreated|datetime('short') : '—' }}</a>
+                        </td>
+                        <td>{{ entry.action }}</td>
+                        <td>
+                            <span class="status {{ entry.getStatusColor() }}"></span>
+                            {{ entry.statusCode ?? '—' }}
+                        </td>
+                        <td>{{ entry.summary }}</td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    {% endif %}
+
+    <div class="buttons" style="margin-top: 16px;">
+        {% if order %}
+            <a class="btn" href="{{ url('exactly/documents/preview/' ~ order.id) }}">{{ 'Preview payload'|t('exactly') }}</a>
+        {% endif %}
+        {% if currentUser and currentUser.can('exactly-pushOrders') %}
+            <button type="button" class="btn" id="exactly-forget">{{ 'Stop tracking'|t('exactly') }}</button>
+        {% endif %}
+    </div>
+{% endblock %}
+
+{% js %}
+(function() {
+    var forget = document.getElementById('exactly-forget');
+    if (!forget) { return; }
+
+    forget.addEventListener('click', function() {
+        if (!confirm({{ 'Remove this record? The invoice itself stays in Exact Online — an issued invoice is not Craft’s to retract.'|t('exactly')|json_encode|raw }})) { return; }
+
+        Craft.sendActionRequest('POST', 'exactly/documents/delete', { data: { documentId: {{ document.id }} } })
+            .then(function(response) {
+                Craft.cp.displayNotice(response.data.message);
+                window.location.href = {{ url('exactly/documents')|json_encode|raw }};
+            })
+            .catch(function() {
+                Craft.cp.displayError({{ 'Couldn’t remove the record.'|t('exactly')|json_encode|raw }});
+            });
+    });
+})();
+{% endjs %}

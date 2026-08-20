@@ -1,0 +1,781 @@
+{# Field names carry no `settings[…]` prefix: `craft\base\Plugin::settingsResponse()` runs this
+   template's output through `View::namespaceInputs(…, 'settings')`, so a name written as
+   `settings[foo]` here posts as `settings[settings][foo]`, saves nothing, and still reports
+   “Plugin settings saved”. #}
+{% import '_includes/forms' as forms %}
+
+{% set isPro = plugin.isPro() %}
+{% set commerceReady = craft.app.plugins.isPluginEnabled('commerce') %}
+{% set connection = plugin.oauth.getConnection() %}
+{% set connected = plugin.oauth.isConnected() %}
+{% set daysLeft = connection ? connection.getDaysUntilExpiry() : null %}
+
+{% if not commerceReady %}
+    <div class="pane">
+        <p class="error">{{ 'Craft Commerce is not installed or enabled. Exactly needs it to do anything.'|t('exactly') }}</p>
+    </div>
+{% endif %}
+
+{% if not isPro %}
+    <div class="pane" style="border-left: 3px solid #cdd8e4;">
+        <p>
+            <strong>{{ 'You’re running Exactly Lite.'|t('exactly') }}</strong>
+            {{ 'Automatic invoicing, the queue, credit notes, per-tax-rate VAT mapping, VIES validation, Peppol and email delivery, payment write-back and the connection log are Pro features. Their settings are shown below but have no effect until you upgrade.'|t('exactly') }}
+        </p>
+    </div>
+{% endif %}
+
+{# ------------------------------------------------------------------ #}
+<h2>{{ 'Connection'|t('exactly') }}</h2>
+
+<div class="pane">
+    <p>
+        {{ 'Create an app at'|t('exactly') }}
+        <a href="https://apps.exactonline.com" rel="noopener" target="_blank">apps.exactonline.com</a>,
+        {{ 'register the redirect URI below on it, then paste its client ID and secret here and save.'|t('exactly') }}
+    </p>
+
+    {{ forms.textField({
+        label: 'Redirect URI'|t('exactly'),
+        instructions: 'Exact Online matches this exactly, character for character. Copy it — don’t retype it.'|t('exactly'),
+        id: 'exactly-redirect',
+        value: settings.getRedirectUri(),
+        readonly: true,
+        class: 'code'
+    }) }}
+
+    <div class="field">
+        {% if connected %}
+            <span class="status green"></span>
+            <strong>{{ 'Connected'|t('exactly') }}</strong>
+            <span class="light">{{ connection.describe() }}</span>
+            {% if daysLeft is not null %}
+                <span class="light">
+                    — {{ 'reconnect within {days} days'|t('exactly', { days: daysLeft }) }}
+                </span>
+            {% endif %}
+        {% elseif connection %}
+            <span class="status red"></span>
+            <strong>{{ 'The connection has expired'|t('exactly') }}</strong>
+            <span class="light">{{ 'Exact Online refresh tokens last 30 days. Connect again.'|t('exactly') }}</span>
+        {% else %}
+            <span class="status"></span>
+            <span class="light">{{ 'Not connected yet.'|t('exactly') }}</span>
+        {% endif %}
+    </div>
+
+    {% if daysLeft is not null and daysLeft < 7 and connected %}
+        <p class="warning">
+            {{ 'This connection expires in {days} days. Exact Online refresh tokens are single-use and last 30 days from the last call, so a store that goes quiet for a month has to reconnect by hand.'|t('exactly', { days: daysLeft }) }}
+        </p>
+    {% endif %}
+
+    <div class="field">
+        <a class="btn submit" href="{{ actionUrl('exactly/oauth/connect') }}">
+            {{ connected ? 'Reconnect'|t('exactly') : 'Connect to Exact Online'|t('exactly') }}
+        </a>
+        <button type="button" class="btn" id="exactly-test">{{ 'Test connection'|t('exactly') }}</button>
+        {% if connection %}
+            <button type="button" class="btn" id="exactly-disconnect">{{ 'Disconnect'|t('exactly') }}</button>
+        {% endif %}
+        <span class="light" id="exactly-test-result"></span>
+    </div>
+</div>
+
+{{ forms.selectField({
+    label: 'Region'|t('exactly'),
+    instructions: 'Exact Online runs a separate site per country, and an account on one cannot be reached on another.'|t('exactly'),
+    id: 'region',
+    name: 'region',
+    options: [
+        { label: 'Netherlands (start.exactonline.nl)', value: 'nl' },
+        { label: 'Belgium (start.exactonline.be)', value: 'be' },
+        { label: 'Germany (start.exactonline.de)', value: 'de' },
+        { label: 'France (start.exactonline.fr)', value: 'fr' },
+        { label: 'Spain (start.exactonline.es)', value: 'es' },
+        { label: 'United Kingdom (start.exactonline.co.uk)', value: 'uk' },
+        { label: 'International (start.exactonline.com)', value: 'com' }
+    ],
+    value: settings.region
+}) }}
+
+{{ forms.autosuggestField({
+    label: 'Custom base URL'|t('exactly'),
+    instructions: 'Overrides the region. Only needed for an Exact region newer than this release.'|t('exactly'),
+    id: 'customBaseUrl',
+    name: 'customBaseUrl',
+    value: settings.customBaseUrl,
+    suggestEnvVars: true,
+    errors: settings.getErrors('customBaseUrl')
+}) }}
+
+{{ forms.autosuggestField({
+    label: 'Client ID'|t('exactly'),
+    id: 'clientId',
+    name: 'clientId',
+    value: settings.clientId,
+    suggestEnvVars: true
+}) }}
+
+{{ forms.autosuggestField({
+    label: 'Client secret'|t('exactly'),
+    id: 'clientSecret',
+    name: 'clientSecret',
+    value: settings.clientSecret,
+    suggestEnvVars: true
+}) }}
+
+{{ forms.textField({
+    label: 'Division'|t('exactly'),
+    instructions: 'The administration invoices are written into. Leave at 0 to use whichever division the connected user is in.'|t('exactly'),
+    id: 'division',
+    name: 'division',
+    type: 'number',
+    value: settings.division
+}) }}
+
+<div class="field">
+    <button type="button" class="btn" id="exactly-divisions">{{ 'List administrations'|t('exactly') }}</button>
+    <span class="light" id="exactly-divisions-result"></span>
+</div>
+
+{# ------------------------------------------------------------------ #}
+<hr>
+<h2>{{ 'Invoicing'|t('exactly') }}</h2>
+
+{{ forms.selectField({
+    label: 'When to invoice'|t('exactly'),
+    instructions: 'Anything but “Only when I ask” is a Pro feature, and all of them go through the queue so that an Exact Online outage can never hold up a checkout.'|t('exactly'),
+    id: 'pushTrigger',
+    name: 'pushTrigger',
+    options: [
+        { label: 'Only when I ask'|t('exactly'), value: 'manual' },
+        { label: 'As soon as the order completes'|t('exactly'), value: 'completed' },
+        { label: 'When the order is fully paid'|t('exactly'), value: 'paid' },
+        { label: 'When the order reaches a status'|t('exactly'), value: 'status' }
+    ],
+    value: settings.pushTrigger,
+    disabled: not isPro
+}) }}
+
+{% set statusList = [] %}
+{% if commerceReady %}
+    {% for status in craft.commerce.orderStatuses.getAllOrderStatuses() %}
+        {% set statusList = statusList|merge([{ label: status.name, value: status.handle }]) %}
+    {% endfor %}
+{% endif %}
+
+{{ forms.checkboxSelectField({
+    label: 'Trigger statuses'|t('exactly'),
+    instructions: 'Used when the trigger above is “When the order reaches a status”.'|t('exactly'),
+    id: 'triggerStatusHandles',
+    name: 'triggerStatusHandles',
+    options: statusList,
+    values: settings.triggerStatusHandles
+}) }}
+
+{{ forms.textField({
+    label: 'Sales journal'|t('exactly'),
+    instructions: 'The Exact journal code sales invoices are booked to. `70` is Exact’s default sales journal.'|t('exactly'),
+    id: 'journalCode',
+    name: 'journalCode',
+    value: settings.journalCode
+}) }}
+
+{{ forms.selectField({
+    label: 'Invoice date'|t('exactly'),
+    id: 'invoiceDateSource',
+    name: 'invoiceDateSource',
+    options: [
+        { label: 'The date the order was placed'|t('exactly'), value: 'orderDate' },
+        { label: 'The date the order was paid'|t('exactly'), value: 'paidDate' },
+        { label: 'Today'|t('exactly'), value: 'today' }
+    ],
+    value: settings.invoiceDateSource
+}) }}
+
+{{ forms.selectField({
+    label: 'Your reference'|t('exactly'),
+    instructions: 'Which Craft order identifier goes on the invoice as the customer reference.'|t('exactly'),
+    id: 'orderNumberSource',
+    name: 'orderNumberSource',
+    options: [
+        { label: 'Order reference'|t('exactly'), value: 'reference' },
+        { label: 'Order number'|t('exactly'), value: 'number' },
+        { label: 'Short order number'|t('exactly'), value: 'shortNumber' },
+        { label: 'Order ID'|t('exactly'), value: 'id' }
+    ],
+    value: settings.orderNumberSource
+}) }}
+
+{{ forms.textField({
+    label: 'Invoice description'|t('exactly'),
+    instructions: 'An object template, rendered against the order.'|t('exactly'),
+    id: 'descriptionTemplate',
+    name: 'descriptionTemplate',
+    value: settings.descriptionTemplate,
+    class: 'code'
+}) }}
+
+{{ forms.textField({
+    label: 'Line description'|t('exactly'),
+    instructions: 'An object template, rendered against each line item. Leave blank to use Commerce’s own description.'|t('exactly'),
+    id: 'lineDescriptionTemplate',
+    name: 'lineDescriptionTemplate',
+    value: settings.lineDescriptionTemplate,
+    class: 'code'
+}) }}
+
+{{ forms.textareaField({
+    label: 'Remarks'|t('exactly'),
+    instructions: 'An object template, rendered against the order, placed in the invoice’s remarks field.'|t('exactly'),
+    id: 'remarksTemplate',
+    name: 'remarksTemplate',
+    value: settings.remarksTemplate,
+    rows: 2,
+    class: 'code'
+}) }}
+
+{{ forms.lightswitchField({
+    label: 'Add a shipping line'|t('exactly'),
+    id: 'includeShippingLine',
+    name: 'includeShippingLine',
+    on: settings.includeShippingLine
+}) }}
+
+{{ forms.lightswitchField({
+    label: 'Add a discount line'|t('exactly'),
+    instructions: 'Order-level and line-level discounts, on one line. Line prices never include them, so nothing is counted twice.'|t('exactly'),
+    id: 'includeDiscountLine',
+    name: 'includeDiscountLine',
+    on: settings.includeDiscountLine
+}) }}
+
+{{ forms.textField({
+    label: 'Rounding tolerance'|t('exactly'),
+    instructions: 'Exact recomputes VAT from the line amounts, so its total can land a cent or two from what the customer paid. A difference this size or smaller is corrected with a rounding line; anything bigger stops the push instead of quietly booking a wrong total. Set to 0 to switch the whole check off.'|t('exactly'),
+    id: 'roundingTolerance',
+    name: 'roundingTolerance',
+    type: 'number',
+    step: '0.01',
+    value: settings.roundingTolerance,
+    errors: settings.getErrors('roundingTolerance')
+}) }}
+
+{{ forms.textField({
+    label: 'Payment condition'|t('exactly'),
+    instructions: 'Exact payment-terms code. Blank uses the account’s own.'|t('exactly'),
+    id: 'paymentConditionCode',
+    name: 'paymentConditionCode',
+    value: settings.paymentConditionCode
+}) }}
+
+{# ------------------------------------------------------------------ #}
+<hr>
+<h2>{{ 'Customers'|t('exactly') }}</h2>
+
+{{ forms.selectField({
+    label: 'Match customers by'|t('exactly'),
+    instructions: 'How an order’s customer is found in Exact before a new account is considered.'|t('exactly'),
+    id: 'accountMatchStrategy',
+    name: 'accountMatchStrategy',
+    options: [
+        { label: 'Email, then VAT number'|t('exactly'), value: 'emailThenVat' },
+        { label: 'VAT number, then email'|t('exactly'), value: 'vatThenEmail' },
+        { label: 'Email only'|t('exactly'), value: 'email' },
+        { label: 'VAT number only'|t('exactly'), value: 'vat' }
+    ],
+    value: settings.accountMatchStrategy
+}) }}
+
+{{ forms.lightswitchField({
+    label: 'Create missing accounts'|t('exactly'),
+    instructions: 'With this off, an order whose customer is not already in Exact fails rather than inventing one.'|t('exactly'),
+    id: 'createMissingAccounts',
+    name: 'createMissingAccounts',
+    on: settings.createMissingAccounts
+}) }}
+
+{{ forms.lightswitchField({
+    label: 'Update existing accounts'|t('exactly'),
+    instructions: 'Keep an Exact account’s address in step with the order’s. Off by default — a bookkeeper’s corrections should outlive a checkout.'|t('exactly'),
+    id: 'updateExistingAccounts',
+    name: 'updateExistingAccounts',
+    on: settings.updateExistingAccounts,
+    disabled: not isPro
+}) }}
+
+{{ forms.selectField({
+    label: 'Account status'|t('exactly'),
+    id: 'accountStatus',
+    name: 'accountStatus',
+    options: [
+        { label: 'Customer'|t('exactly'), value: 'C' },
+        { label: 'Prospect'|t('exactly'), value: 'P' },
+        { label: 'Suspect'|t('exactly'), value: 'S' },
+        { label: 'None'|t('exactly'), value: 'A' }
+    ],
+    value: settings.accountStatus
+}) }}
+
+{{ forms.textField({
+    label: 'VAT number field'|t('exactly'),
+    instructions: 'Handle of the field holding the customer’s VAT number. Craft 5 addresses have an “Organization Tax ID” attribute, which Exactly reads automatically — this is only needed if your store keeps the number somewhere else.'|t('exactly'),
+    id: 'vatNumberFieldHandle',
+    name: 'vatNumberFieldHandle',
+    value: settings.vatNumberFieldHandle,
+    class: 'code'
+}) }}
+
+{{ forms.textField({
+    label: 'Company name field'|t('exactly'),
+    instructions: 'Optional. Falls back to the address’s organization, then its name.'|t('exactly'),
+    id: 'companyFieldHandle',
+    name: 'companyFieldHandle',
+    value: settings.companyFieldHandle,
+    class: 'code'
+}) }}
+
+{# ------------------------------------------------------------------ #}
+<hr>
+<h2>{{ 'Items and ledger'|t('exactly') }}</h2>
+
+<div class="pane">
+    <p>
+        {{ 'Exact Online requires an item on every sales invoice line — there is no “description only” line. Most stores put everything on one generic item and carry the product name in the line description; a Commerce catalogue of thousands of variants does not belong in an accounting package’s stock list.'|t('exactly') }}
+    </p>
+</div>
+
+{{ forms.selectField({
+    label: 'Item matching'|t('exactly'),
+    id: 'itemStrategy',
+    name: 'itemStrategy',
+    options: [
+        { label: 'Match the SKU, fall back to a generic item'|t('exactly'), value: 'sku' },
+        { label: 'Always use the generic item'|t('exactly'), value: 'fallback' }
+    ],
+    value: settings.itemStrategy
+}) }}
+
+{{ forms.textField({
+    label: 'Fallback item code'|t('exactly'),
+    instructions: 'The Exact item code (or ID) every unmatched line is invoiced against. Without one, an unmatched SKU fails the push.'|t('exactly'),
+    id: 'fallbackItemCode',
+    name: 'fallbackItemCode',
+    value: settings.fallbackItemCode,
+    class: 'code'
+}) }}
+
+{{ forms.lightswitchField({
+    label: 'Create missing items'|t('exactly'),
+    id: 'createMissingItems',
+    name: 'createMissingItems',
+    on: settings.createMissingItems,
+    disabled: not isPro
+}) }}
+
+{{ forms.textField({
+    label: 'Default revenue GL account'|t('exactly'),
+    instructions: 'Ledger code for invoice lines. Blank lets Exact use each item’s own revenue account.'|t('exactly'),
+    id: 'defaultGlAccountCode',
+    name: 'defaultGlAccountCode',
+    value: settings.defaultGlAccountCode,
+    class: 'code'
+}) }}
+
+{{ forms.textField({
+    label: 'Shipping item code'|t('exactly'),
+    id: 'shippingItemCode',
+    name: 'shippingItemCode',
+    value: settings.shippingItemCode,
+    class: 'code'
+}) }}
+
+{{ forms.textField({
+    label: 'Shipping GL account'|t('exactly'),
+    id: 'shippingGlAccountCode',
+    name: 'shippingGlAccountCode',
+    value: settings.shippingGlAccountCode,
+    class: 'code'
+}) }}
+
+{{ forms.textField({
+    label: 'Discount item code'|t('exactly'),
+    id: 'discountItemCode',
+    name: 'discountItemCode',
+    value: settings.discountItemCode,
+    class: 'code'
+}) }}
+
+{{ forms.textField({
+    label: 'Discount GL account'|t('exactly'),
+    id: 'discountGlAccountCode',
+    name: 'discountGlAccountCode',
+    value: settings.discountGlAccountCode,
+    class: 'code'
+}) }}
+
+{{ forms.textField({
+    label: 'Rounding item code'|t('exactly'),
+    id: 'roundingItemCode',
+    name: 'roundingItemCode',
+    value: settings.roundingItemCode,
+    class: 'code'
+}) }}
+
+{{ forms.textField({
+    label: 'Rounding GL account'|t('exactly'),
+    id: 'roundingGlAccountCode',
+    name: 'roundingGlAccountCode',
+    value: settings.roundingGlAccountCode,
+    class: 'code'
+}) }}
+
+{{ forms.textField({
+    label: 'Rounding VAT code'|t('exactly'),
+    instructions: 'Must be a 0% code. A rounding line that attracts VAT moves the total by the difference plus VAT, and never lands on the right number.'|t('exactly'),
+    id: 'roundingVatCode',
+    name: 'roundingVatCode',
+    value: settings.roundingVatCode,
+    class: 'code'
+}) }}
+
+{{ forms.textField({
+    label: 'Cost centre'|t('exactly'),
+    id: 'costCenterCode',
+    name: 'costCenterCode',
+    value: settings.costCenterCode,
+    class: 'code'
+}) }}
+
+{{ forms.textField({
+    label: 'Cost unit'|t('exactly'),
+    id: 'costUnitCode',
+    name: 'costUnitCode',
+    value: settings.costUnitCode,
+    class: 'code'
+}) }}
+
+{# ------------------------------------------------------------------ #}
+<hr>
+<h2>{{ 'VAT'|t('exactly') }}</h2>
+
+<div class="pane">
+    <p>
+        {{ 'Exactly works out how each sale should be treated from the shipping country and the customer’s VAT number, then uses the code you map here. Map every one of them: an unmapped treatment means Exact falls back to the item’s own VAT code, which is right for domestic sales and wrong for everything else.'|t('exactly') }}
+    </p>
+
+    {% set unmapped = settings.getUnmappedTreatments() %}
+    {% if unmapped|length %}
+        <p class="warning">
+            {{ 'Not mapped yet: {list}'|t('exactly', { list: unmapped|join(', ') }) }}
+        </p>
+    {% endif %}
+</div>
+
+{{ forms.textField({
+    label: 'Seller country'|t('exactly'),
+    instructions: 'ISO country code the administration invoices from. Blank reads it from Exact.'|t('exactly'),
+    id: 'sellerCountry',
+    name: 'sellerCountry',
+    value: settings.sellerCountry,
+    size: 4,
+    errors: settings.getErrors('sellerCountry')
+}) }}
+
+{% set treatmentRows = {
+    'domestic': 'Domestic — the buyer is in the same country as the administration'|t('exactly'),
+    'reverse-charge': 'Intra-community reverse charge — EU business with a valid VAT number'|t('exactly'),
+    'oss': 'EU consumer (OSS) — destination VAT, reported through One Stop Shop'|t('exactly'),
+    'export': 'Export — outside the EU'|t('exactly'),
+    'exempt': 'Exempt'|t('exactly')
+} %}
+
+{% for treatment, label in treatmentRows %}
+    {{ forms.textField({
+        label: label,
+        id: 'vatCodeByTreatment-' ~ treatment,
+        name: 'vatCodeByTreatment[' ~ treatment ~ ']',
+        value: settings.vatCodeByTreatment[treatment] ?? '',
+        placeholder: 'Exact VAT code'|t('exactly'),
+        class: 'code',
+        size: 12
+    }) }}
+{% endfor %}
+
+{% set taxRates = plugin.vat.getCommerceTaxRates() %}
+{% if taxRates|length %}
+    <h3>{{ 'Per Commerce tax rate'|t('exactly') }} {% if not isPro %}<span class="light">({{ 'Pro'|t('exactly') }})</span>{% endif %}</h3>
+    <p class="light">
+        {{ 'When a line actually carries one of these rates, its code wins over the treatment above — a merchant who has modelled reduced rates in Commerce knows better than any inference.'|t('exactly') }}
+    </p>
+
+    {% for rate in taxRates %}
+        {{ forms.textField({
+            label: rate.name ~ ' (' ~ (rate.rate * 100)|number_format(2) ~ '%)',
+            id: 'vatCodeByTaxRate-' ~ rate.id,
+            name: 'vatCodeByTaxRate[' ~ rate.id ~ ']',
+            value: settings.vatCodeByTaxRate[rate.id] ?? '',
+            placeholder: 'Exact VAT code'|t('exactly'),
+            class: 'code',
+            size: 12,
+            disabled: not isPro
+        }) }}
+    {% endfor %}
+{% endif %}
+
+{{ forms.lightswitchField({
+    label: 'Reverse charge needs a well-formed VAT number'|t('exactly'),
+    instructions: 'With this off, any non-empty value in the VAT field is enough to zero-rate the sale.'|t('exactly'),
+    id: 'requireValidVatNumber',
+    name: 'requireValidVatNumber',
+    on: settings.requireValidVatNumber
+}) }}
+
+{{ forms.lightswitchField({
+    label: 'Check VAT numbers against VIES'|t('exactly'),
+    instructions: 'Fails closed: a number VIES will not confirm is treated as a consumer sale, which charges VAT. Over-charging is recoverable; under-charging is your liability.'|t('exactly'),
+    id: 'viesValidation',
+    name: 'viesValidation',
+    on: settings.viesValidation,
+    disabled: not isPro
+}) }}
+
+<div class="field">
+    <input type="text" class="text code" id="exactly-vat-test" size="20" placeholder="NL123456789B01">
+    <button type="button" class="btn" id="exactly-vat-check">{{ 'Check with VIES'|t('exactly') }}</button>
+    <span class="light" id="exactly-vat-result"></span>
+</div>
+
+{# ------------------------------------------------------------------ #}
+<hr>
+<h2>{{ 'Delivery'|t('exactly') }} {% if not isPro %}<span class="light">({{ 'Pro'|t('exactly') }})</span>{% endif %}</h2>
+
+{{ forms.selectField({
+    label: 'Send the invoice'|t('exactly'),
+    instructions: 'Peppol is what EU e-invoicing mandates want; the postbox needs an Exact Mailbox licence.'|t('exactly'),
+    id: 'deliveryMode',
+    name: 'deliveryMode',
+    options: [
+        { label: 'Don’t — leave it for me to print'|t('exactly'), value: 'none' },
+        { label: 'However the Exact account is set up'|t('exactly'), value: 'account' },
+        { label: 'Email the PDF to the customer'|t('exactly'), value: 'email' },
+        { label: 'Exact digital postbox'|t('exactly'), value: 'postbox' },
+        { label: 'Peppol network'|t('exactly'), value: 'peppol' }
+    ],
+    value: settings.deliveryMode,
+    disabled: not isPro
+}) }}
+
+{{ forms.textField({
+    label: 'Document layout ID'|t('exactly'),
+    instructions: 'An Exact layout ID (a GUID), not a name.'|t('exactly'),
+    id: 'documentLayoutId',
+    name: 'documentLayoutId',
+    value: settings.documentLayoutId,
+    class: 'code',
+    disabled: not isPro,
+    errors: settings.getErrors('documentLayoutId')
+}) }}
+
+{{ forms.textField({
+    label: 'Email layout ID'|t('exactly'),
+    id: 'emailLayoutId',
+    name: 'emailLayoutId',
+    value: settings.emailLayoutId,
+    class: 'code',
+    disabled: not isPro,
+    errors: settings.getErrors('emailLayoutId')
+}) }}
+
+{{ forms.autosuggestField({
+    label: 'Sender email address'|t('exactly'),
+    id: 'senderEmailAddress',
+    name: 'senderEmailAddress',
+    value: settings.senderEmailAddress,
+    suggestEnvVars: true,
+    disabled: not isPro,
+    errors: settings.getErrors('senderEmailAddress')
+}) }}
+
+{{ forms.textareaField({
+    label: 'Extra text'|t('exactly'),
+    id: 'extraText',
+    name: 'extraText',
+    value: settings.extraText,
+    rows: 2,
+    disabled: not isPro
+}) }}
+
+{# ------------------------------------------------------------------ #}
+<hr>
+<h2>{{ 'Automation'|t('exactly') }} {% if not isPro %}<span class="light">({{ 'Pro'|t('exactly') }})</span>{% endif %}</h2>
+
+{{ forms.lightswitchField({
+    label: 'Push through the queue'|t('exactly'),
+    instructions: 'Strongly recommended. An Exact Online outage must never be able to stop a customer checking out.'|t('exactly'),
+    id: 'useQueue',
+    name: 'useQueue',
+    on: settings.useQueue,
+    disabled: not isPro
+}) }}
+
+{{ forms.textField({
+    label: 'Maximum attempts'|t('exactly'),
+    id: 'maxAttempts',
+    name: 'maxAttempts',
+    type: 'number',
+    value: settings.maxAttempts,
+    disabled: not isPro,
+    errors: settings.getErrors('maxAttempts')
+}) }}
+
+{{ forms.textField({
+    label: 'Retry delay (minutes)'|t('exactly'),
+    id: 'retryDelayMinutes',
+    name: 'retryDelayMinutes',
+    type: 'number',
+    value: settings.retryDelayMinutes,
+    disabled: not isPro,
+    errors: settings.getErrors('retryDelayMinutes')
+}) }}
+
+{{ forms.lightswitchField({
+    label: 'Credit notes on refund'|t('exactly'),
+    id: 'creditNotesOnRefund',
+    name: 'creditNotesOnRefund',
+    on: settings.creditNotesOnRefund,
+    disabled: not isPro
+}) }}
+
+{{ forms.selectField({
+    label: 'Credit note amounts'|t('exactly'),
+    instructions: 'Exact’s field reference does not state which sign credit-note lines take, so this is a switch rather than an assumption. If credit notes come out doubling the invoice instead of cancelling it, change this.'|t('exactly'),
+    id: 'creditNoteSign',
+    name: 'creditNoteSign',
+    options: [
+        { label: 'Positive'|t('exactly'), value: 'positive' },
+        { label: 'Negative'|t('exactly'), value: 'negative' }
+    ],
+    value: settings.creditNoteSign,
+    disabled: not isPro
+}) }}
+
+{{ forms.lightswitchField({
+    label: 'Read payment status back from Exact'|t('exactly'),
+    instructions: 'Reconciles against Exact’s open items. Run `exactly/sync/payments` on a schedule.'|t('exactly'),
+    id: 'paymentWriteback',
+    name: 'paymentWriteback',
+    on: settings.paymentWriteback,
+    disabled: not isPro
+}) }}
+
+{{ forms.selectField({
+    label: 'Paid order status'|t('exactly'),
+    instructions: 'Where an order goes when Exact reports its invoice paid. Blank records the payment on the document only.'|t('exactly'),
+    id: 'paidStatusHandle',
+    name: 'paidStatusHandle',
+    options: [{ label: 'Leave the order alone'|t('exactly'), value: '' }]|merge(statusList),
+    value: settings.paidStatusHandle,
+    disabled: not isPro
+}) }}
+
+{# ------------------------------------------------------------------ #}
+<hr>
+<h2>{{ 'Logging'|t('exactly') }}</h2>
+
+{{ forms.lightswitchField({
+    label: 'Log every call'|t('exactly'),
+    id: 'loggingEnabled',
+    name: 'loggingEnabled',
+    on: settings.loggingEnabled
+}) }}
+
+{{ forms.lightswitchField({
+    label: 'Keep request and response bodies'|t('exactly'),
+    instructions: 'Client secrets and tokens are redacted before anything is stored.'|t('exactly'),
+    id: 'logPayloads',
+    name: 'logPayloads',
+    on: settings.logPayloads,
+    disabled: not isPro
+}) }}
+
+{{ forms.textField({
+    label: 'Keep log entries for (days)'|t('exactly'),
+    instructions: '0 keeps everything. Lite keeps 7 days whatever this says.'|t('exactly'),
+    id: 'logRetentionDays',
+    name: 'logRetentionDays',
+    type: 'number',
+    value: settings.logRetentionDays,
+    errors: settings.getErrors('logRetentionDays')
+}) }}
+
+<div class="field">
+    <button type="button" class="btn" id="exactly-clear-cache">{{ 'Clear cached lookups'|t('exactly') }}</button>
+    <span class="light">{{ 'Forgets cached account, item, VAT-code and ledger lookups for this division.'|t('exactly') }}</span>
+</div>
+
+{% js %}
+(function() {
+    function post(action, data, onDone) {
+        Craft.sendActionRequest('POST', action, { data: data || {} })
+            .then(function(response) { onDone(response.data); })
+            .catch(function(error) {
+                var message = (error && error.response && error.response.data && error.response.data.message)
+                    || {{ 'Something went wrong.'|t('exactly')|json_encode|raw }};
+                Craft.cp.displayError(message);
+                onDone(null);
+            });
+    }
+
+    function on(id, handler) {
+        var el = document.getElementById(id);
+        if (el) { el.addEventListener('click', handler); }
+    }
+
+    on('exactly-test', function() {
+        var out = document.getElementById('exactly-test-result');
+        out.textContent = {{ 'Checking…'|t('exactly')|json_encode|raw }};
+        post('exactly/settings/test', {}, function(data) {
+            out.textContent = data ? data.message : '';
+        });
+    });
+
+    on('exactly-divisions', function() {
+        var out = document.getElementById('exactly-divisions-result');
+        out.textContent = {{ 'Loading…'|t('exactly')|json_encode|raw }};
+        post('exactly/settings/divisions', {}, function(data) {
+            if (!data || !data.divisions || !data.divisions.length) {
+                out.textContent = {{ 'No administrations came back.'|t('exactly')|json_encode|raw }};
+                return;
+            }
+            out.textContent = data.divisions.map(function(d) {
+                return d.code + ' — ' + d.name;
+            }).join(' · ');
+        });
+    });
+
+    on('exactly-disconnect', function() {
+        if (!confirm({{ 'Forget the stored Exact Online tokens? Invoices already sent are untouched.'|t('exactly')|json_encode|raw }})) { return; }
+        post('exactly/oauth/disconnect', {}, function(data) {
+            if (data) { Craft.cp.displayNotice(data.message); window.location.reload(); }
+        });
+    });
+
+    on('exactly-clear-cache', function() {
+        post('exactly/settings/clear-cache', {}, function(data) {
+            if (data) { Craft.cp.displayNotice(data.message); }
+        });
+    });
+
+    on('exactly-vat-check', function() {
+        var input = document.getElementById('exactly-vat-test');
+        var out = document.getElementById('exactly-vat-result');
+        if (!input.value) { return; }
+        out.textContent = {{ 'Asking VIES…'|t('exactly')|json_encode|raw }};
+        post('exactly/settings/check-vat-number', { vatNumber: input.value }, function(data) {
+            out.textContent = data ? data.message : '';
+        });
+    });
+})();
+{% endjs %}
