@@ -11,7 +11,7 @@ use justinholtweb\exactly\models\Document;
 use justinholtweb\exactly\Plugin;
 
 /**
- * Reading payment status back out of Exact Online (Pro).
+ * Reading payment status back out of Exact Online.
  *
  * Once a merchant pays their bookkeeping through Exact — bank feeds, manual matching, a direct
  * debit run — Exact is the system that knows whether an invoice is settled. Craft usually does
@@ -44,7 +44,7 @@ class Payments extends Component
         $plugin = Plugin::getInstance();
         $result = ['checked' => 0, 'paid' => 0, 'outstanding' => 0, 'errors' => []];
 
-        if (!$plugin->isPro() || !$plugin->getSettings()->paymentWriteback) {
+        if (!$plugin->getSettings()->paymentWriteback) {
             return $result;
         }
 

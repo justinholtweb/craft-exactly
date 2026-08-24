@@ -5,15 +5,11 @@ namespace justinholtweb\exactly\controllers;
 use Craft;
 use craft\web\Controller;
 use justinholtweb\exactly\Plugin;
-use yii\web\ForbiddenHttpException;
 use yii\web\NotFoundHttpException;
 use yii\web\Response;
 
 /**
  * The connection log in the control panel.
- *
- * Pro only. Lite still writes a short tail of entries so a support question can be answered from
- * the database, it just has no screen for them.
  */
 class LogController extends Controller
 {
@@ -28,10 +24,6 @@ class LogController extends Controller
 
         $this->requireCpRequest();
         $this->requirePermission('exactly-viewLog');
-
-        if (!Plugin::getInstance()->isPro()) {
-            throw new ForbiddenHttpException('The connection log requires Exactly Pro.');
-        }
 
         return true;
     }

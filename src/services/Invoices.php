@@ -413,7 +413,7 @@ class Invoices extends Component
         $plugin = Plugin::getInstance();
         $settings = $plugin->getSettings();
 
-        if ($settings->deliveryMode === 'none' || !$plugin->isPro()) {
+        if ($settings->deliveryMode === 'none') {
             return null;
         }
 

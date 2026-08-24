@@ -39,16 +39,15 @@ Exactly is built around those four, not around the endpoint list.
 **Out**, deliberately: purchase invoices, general-journal entries, stock movements, subscriptions,
 projects, payroll, and anything that writes to Craft from Exact other than payment status.
 
-## Editions
+## Editions and price
 
-- **Lite** (free): connect one administration, push by hand from the order screen or the console,
-  account and item matching, single VAT-code map, the documents ledger, a 7-day log tail with no
-  screen.
-- **Pro**: automatic triggers, the queue with rate-limit-aware retries, credit notes, per-tax-rate
-  VAT mapping, per-product-type GL accounts, VIES, delivery, payment write-back, the log screen.
+**One paid edition, $99 with a $79 annual renewal.** Decided 2026-08-24, following Sevvies rather
+than the family's usual Lite/Pro split.
 
-Pricing is not fixed in this plan — the family precedent for a Commerce integration of this weight is
-Shipper at $99 and Caffeine at $149, and this sits between them.
+The reasoning against a free tier here: everything Exactly does is load-bearing the moment a merchant
+switches it on. A Lite tier that pushes invoices by hand but cannot reconcile payments, cannot issue
+credit notes and cannot run automatically is not a smaller version of the product — it is a version
+that leaves the books half-done, which is worse than not integrating at all.
 
 ## Architecture
 
@@ -107,6 +106,23 @@ replaces only the HTTP layer. Everything below it is the real code. 158 checks.
 CP screens, the settings round-trip (including nested arrays) and the OAuth redirect route are
 smoke-tested over real HTTP; console commands by direct instantiation, because a sibling plugin
 breaks Yii's controller discovery in that harness.
+
+## Languages
+
+Exact Online runs seven regional hosts, and the family precedent is unambiguous: every vendor-locale
+accounting integration ships its market's languages (Sevvies `de`, Twinsies `nl`, Vismaz `sv`, Bird
+`nl`/`nl-BE`/`fr-BE`/`de`). Exactly ships `nl`, `nl-BE`, `de`, `fr`, `fr-BE` and `es`.
+
+Full catalogues for `nl`, `de`, `fr` and `es`; `nl-BE` and `fr-BE` are overlays, because Yii merges
+them over their base language and only register and a handful of words actually differ. Terminology
+follows each market's bookkeeping vocabulary, not a literal translation.
+
+The Belgian overlays come with a caveat found while testing them: Craft validates a user's
+preferred CP language against `getAppLocaleIds()` — the 31 locales it ships its own translations
+for — and returns null for anything else. `nl-BE` and `fr-BE` are therefore not selectable in the
+language menu, and only load when set as `defaultCpLanguage`, which Craft does *not* validate. They
+ship anyway: a Belgian agency setting one line of config is a plausible install, and the files are
+twenty lines each.
 
 ## Still to do
 

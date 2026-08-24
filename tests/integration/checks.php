@@ -77,8 +77,6 @@ $suffix = substr(md5((string)microtime(true)), 0, 6);
 $createdProducts = [];
 $createdOrders = [];
 $originalSettings = $plugin->getSettings()->toArray();
-$originalEdition = Craft::$app->getPlugins()->getPluginInfo(Plugin::HANDLE)['edition'] ?? Plugin::EDITION_LITE;
-
 const TEST_DIVISION = 987654;
 
 /**
@@ -274,20 +272,13 @@ class FakeApi extends Api
 }
 
 /**
- * Settings and editions are changed **in memory only**.
+ * Settings are changed **in memory only**.
  *
- * Both live in project config, and project config in this shared harness is contended — the queue
+ * They live in project config, and project config in this shared harness is contended — the queue
  * runner and a dozen sibling plugins write it while a long console script runs, which produces
  * `StaleResourceException` halfway through a suite that has nothing to do with any of them.
  * Nothing here is testing that Craft can persist a setting, so nothing here persists one.
  */
-function switchEdition(string $edition): void
-{
-    global $plugin;
-
-    $plugin->edition = $edition;
-}
-
 function applySettings(array $values): void
 {
     global $plugin;
@@ -316,20 +307,6 @@ function withSettings(array $overrides, callable $fn): mixed
     }
 }
 
-function withEdition(string $edition, callable $fn): mixed
-{
-    global $plugin;
-
-    $original = $plugin->edition;
-
-    try {
-        switchEdition($edition);
-
-        return $fn();
-    } finally {
-        switchEdition($original);
-    }
-}
 
 // `craft-penny` (a sibling plugin in this shared harness) registers an
 // Elements::EVENT_BEFORE_SAVE_ELEMENT handler typed `ModelEvent` while Craft passes an
@@ -661,8 +638,6 @@ try {
     // =====================================================================
     section('Settings');
 
-    switchEdition(Plugin::EDITION_PRO);
-
     applySettings(array_merge($originalSettings, [
         'region' => 'nl',
         'customBaseUrl' => '',
@@ -838,11 +813,9 @@ try {
             ?: 'stored request was ' . var_export($entry?->request, true);
     });
 
-    check('Lite caps log retention at a week however it is configured', function() use ($plugin) {
-        return withEdition(Plugin::EDITION_LITE, function() use ($plugin) {
-            $lite = $plugin->getSettings()->getEffectiveLogRetentionDays();
-
-            return $lite === 7 ?: "got $lite";
+    check('retention of 0 keeps everything rather than pruning it all', function() use ($plugin) {
+        return withSettings(['logRetentionDays' => 0], function() use ($plugin) {
+            return $plugin->getLog()->prune() === 0;
         });
     });
 
@@ -1471,13 +1444,13 @@ try {
         });
     });
 
-    check('Lite ignores the per-tax-rate map', function() use ($plugin, $mixedOrder) {
-        return withSettings(['vatCodeByTaxRate' => ['4242' => '9']], fn() => withEdition(Plugin::EDITION_LITE, function() use ($plugin, $mixedOrder) {
+    check('an unmapped tax rate falls back to the treatment code', function() use ($plugin, $mixedOrder) {
+        return withSettings(['vatCodeByTaxRate' => ['9999' => '9']], function() use ($plugin, $mixedOrder) {
             $result = $plugin->getInvoices()->buildPayload($mixedOrder);
             $code = $result['payload']['SalesInvoiceLines'][0]['VATCode'] ?? null;
 
             return $code === '21' ?: 'got ' . var_export($code, true);
-        }));
+        });
     });
 
     // =====================================================================
@@ -1639,14 +1612,6 @@ try {
         });
     });
 
-    check('Lite cannot issue credit notes', function() use ($plugin, $pushOrder) {
-        return withEdition(Plugin::EDITION_LITE, function() use ($plugin, $pushOrder) {
-            $result = $plugin->getSync()->creditNote($pushOrder);
-
-            return $result['success'] === false && str_contains($result['message'], 'Pro');
-        });
-    });
-
     // =====================================================================
     section('Delivery');
 
@@ -1728,8 +1693,8 @@ try {
             ?: 'got ' . var_export($after?->paymentStatus, true);
     });
 
-    check('Lite does not reconcile payments at all', function() use ($plugin) {
-        return withEdition(Plugin::EDITION_LITE, function() use ($plugin) {
+    check('payment write-back can be switched off, and then nothing is checked', function() use ($plugin) {
+        return withSettings(['paymentWriteback' => false], function() use ($plugin) {
             return $plugin->getPayments()->sync()['checked'] === 0;
         });
     });
@@ -1771,14 +1736,6 @@ try {
             return $evaluation['eligible'] === false && str_contains((string)$evaluation['reason'], 'not paid')
                 ?: 'reason: ' . $evaluation['reason'];
         });
-    });
-
-    check('Lite forces the manual trigger whatever the setting says', function() use ($plugin) {
-        return withSettings(['pushTrigger' => 'completed'], fn() => withEdition(Plugin::EDITION_LITE, function() use ($plugin) {
-            $effective = $plugin->getSettings()->getEffectivePushTrigger();
-
-            return $effective === 'manual' ?: "got $effective";
-        }));
     });
 
     check('an uninvoiced order shows up in the backfill list', function() use ($plugin, $variantA, $suffix) {
@@ -1848,6 +1805,108 @@ try {
         $variable = new justinholtweb\exactly\twig\ExactlyVariable();
 
         return $variable->invoiceNumber(null) === null && $variable->documents(null) === [];
+    });
+
+    // =====================================================================
+    section('Translations');
+
+    // Strings deliberately identical to the English: OAuth and protocol terms every market uses in
+    // English anyway. Flagging them as untranslated would be noise.
+    $sameOnPurpose = [
+        'Client ID', 'Client secret', 'Exact Online', 'Exactly', 'Endpoint', 'Payload', 'PDF',
+        'Peppol', 'Journal', 'Info', 'Status', 'Region', 'Action', 'Document', 'Documents',
+    ];
+
+    $translationDir = dirname(__DIR__, 2) . '/src/translations';
+    $sourceStrings = array_keys(require "$translationDir/en/exactly.php");
+
+    foreach (['nl', 'de', 'fr', 'es'] as $language) {
+        check("the $language catalogue covers every source string", function() use ($translationDir, $sourceStrings, $sameOnPurpose, $language) {
+            $catalogue = require "$translationDir/$language/exactly.php";
+
+            $missing = array_values(array_diff($sourceStrings, array_keys($catalogue)));
+
+            if ($missing) {
+                return count($missing) . ' missing, first: ' . $missing[0];
+            }
+
+            $untranslated = array_values(array_filter(
+                array_keys($catalogue),
+                static fn(string $key) => $catalogue[$key] === $key
+                    && strlen($key) > 12
+                    && !in_array($key, $sameOnPurpose, true),
+            ));
+
+            return $untranslated === [] ?: count($untranslated) . ' left in English, first: ' . $untranslated[0];
+        });
+    }
+
+    $catalogues = [];
+
+    foreach (['nl', 'nl-BE', 'de', 'fr', 'fr-BE', 'es'] as $language) {
+        $catalogues[$language] = require "$translationDir/$language/exactly.php";
+    }
+
+    check('no translation loses or invents a {placeholder}', function() use ($catalogues) {
+        // A dropped `{number}` is not a typo — it is an error message that no longer says which
+        // invoice, in the language of the person least able to guess.
+        foreach ($catalogues as $language => $messages) {
+            foreach ($messages as $source => $translated) {
+                preg_match_all('/\{(\w+)\}/', $source, $expected);
+                preg_match_all('/\{(\w+)\}/', $translated, $actual);
+                sort($expected[1]);
+                sort($actual[1]);
+
+                if ($expected[1] !== $actual[1]) {
+                    return "$language changed the placeholders in: $source";
+                }
+            }
+        }
+
+        return true;
+    });
+
+    check('no translation breaks its Markdown or backticked code', function() use ($catalogues) {
+        foreach ($catalogues as $language => $messages) {
+            foreach ($messages as $source => $translated) {
+                if (substr_count($source, '`') !== substr_count($translated, '`')) {
+                    return "$language changed the backticks in: $source";
+                }
+
+                if (substr_count($source, '**') !== substr_count($translated, '**')) {
+                    return "$language changed the bold markers in: $source";
+                }
+            }
+        }
+
+        return true;
+    });
+
+    check('Craft resolves a Dutch string through the plugin category', function() {
+        $translated = Craft::t('exactly', 'Sales journal', [], 'nl');
+
+        return $translated === 'Verkoopdagboek' ?: "got $translated";
+    });
+
+    check('the vocabulary follows each market, not the English', function() {
+        // France issues an *avoir*; Spain a *factura rectificativa*; Germany a *Gutschrift*. A
+        // literal translation of "credit note" would be wrong in all three.
+        return Craft::t('exactly', 'Credit note', [], 'fr') === 'Avoir'
+            && Craft::t('exactly', 'Credit note', [], 'es') === 'Factura rectificativa'
+            && Craft::t('exactly', 'Credit note', [], 'de') === 'Gutschrift';
+    });
+
+    check('the Belgian overlays override only what differs', function() {
+        // Yii's PhpMessageSource merges nl-BE over nl and fr-BE over fr, which is why those two
+        // files are twenty lines rather than four hundred.
+        return Craft::t('exactly', 'Credit note', [], 'fr-BE') === 'Note de crédit'
+            && Craft::t('exactly', 'Sales journal', [], 'fr-BE') === 'Journal des ventes'
+            && Craft::t('exactly', 'Only when I ask', [], 'nl-BE') === 'Enkel als ik het zeg'
+            && Craft::t('exactly', 'Sales journal', [], 'nl-BE') === 'Verkoopdagboek';
+    });
+
+    check('an unsupported language falls back to English rather than blanking', function() {
+        return Craft::t('exactly', 'Sales journal', [], 'sv') === 'Sales journal';
     });
 
     // =====================================================================
@@ -1952,10 +2011,9 @@ try {
         echo "  ! could not clear the connection: {$e->getMessage()}\n";
     }
 
-    // Settings and the edition were only ever changed in memory, so there is nothing to undo on
-    // disk — but restoring them keeps anything running after this in the same process honest.
+    // Settings were only ever changed in memory, so there is nothing to undo on disk — but
+    // restoring them keeps anything running after this in the same process honest.
     applySettings($originalSettings);
-    switchEdition($originalEdition);
 
     echo "  ✓ fixtures removed, settings restored\n";
 

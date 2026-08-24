@@ -1,5 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" role="img" aria-label="Exactly">
-  <!-- Single path, evenodd: the ruled lines and the tick are cut *out* of the sheet, so the icon
-       still reads as an invoice when Craft renders it as a flat mask at 16px. -->
-  <path fill="currentColor" fill-rule="evenodd" d="M18 8h40l24 24v60a4 4 0 0 1-4 4H18a4 4 0 0 1-4-4V12a4 4 0 0 1 4-4Zm40 8.5V30a2 2 0 0 0 2 2h13.5L58 16.5ZM26 42h34v6H26Zm0 13h26v6H26Zm18.7 27.6L34 71.9l5.7-5.7 5 5 14.9-14.9 5.7 5.7Z"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <!-- The mark alone, for the control panel nav, where Craft applies its own colour. The same
+       geometry as icon.svg copied across unchanged, so the two cannot drift. -->
+  <rect x="20" y="31" width="60" height="13" rx="3.5"/>
+  <rect x="20" y="56" width="60" height="13" rx="3.5"/>
 </svg>

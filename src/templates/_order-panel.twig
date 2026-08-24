@@ -71,7 +71,7 @@
             <button type="button" class="btn" id="exactly-queue">{{ 'Queue it'|t('exactly') }}</button>
         {% endif %}
 
-        {% if canCredit and isPro and invoice and invoice.isSent() %}
+        {% if canCredit and invoice and invoice.isSent() %}
             <button type="button" class="btn" id="exactly-credit">{{ 'Credit note'|t('exactly') }}</button>
         {% endif %}
     </div>

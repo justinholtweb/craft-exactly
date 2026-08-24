@@ -31,6 +31,9 @@ Initial release.
 - **Console commands** for connection status, divisions, VIES checks, per-order push and preview,
   backfill, retry, payment reconciliation, maintenance and log housekeeping.
 - **Twig API** (`craft.exactly`), read-only.
-- Pro: automatic invoicing on completion, payment or status change; the queue with rate-limit-aware
-  retries; credit notes; per-Commerce-tax-rate VAT mapping; per-product-type GL accounts; VIES
-  validation; email, postbox and **Peppol** delivery; payment write-back from Exact's open items.
+- **Automatic invoicing** on completion, payment or status change, through a rate-limit-aware queue.
+- **Credit notes** for refunds, per-Commerce-tax-rate VAT mapping, per-product-type GL accounts,
+  VIES validation, email / postbox / **Peppol** delivery, and payment write-back from Exact's open
+  items.
+- **Dutch, Flemish, German, French, Belgian French and Spanish** control-panel translations,
+  following each market's bookkeeping vocabulary.

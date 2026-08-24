@@ -65,7 +65,7 @@ class Accounts extends Component
             if ($remote !== null) {
                 $this->cacheAccount($division, $key, $order, $remote, $vatNumber);
 
-                if ($settings->updateExistingAccounts && Plugin::getInstance()->isPro()) {
+                if ($settings->updateExistingAccounts) {
                     $this->updateAccount((string)$remote['ID'], $order, $vatNumber);
                 }
 

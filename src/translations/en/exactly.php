@@ -5,10 +5,13 @@
  *
  * Craft falls back to the key when a translation is missing, so this file is documentation as
  * much as translation: it is the complete list of what Exactly says to a human.
+ *
+ * Dutch, German, French and Spanish catalogues sit beside it, with Flemish and Belgian French as
+ * overlays. Regenerate this file after changing any copy, then reconcile the rest.
  */
 
 return [
-    '0 keeps everything. Lite keeps 7 days whatever this says.' => '0 keeps everything. Lite keeps 7 days whatever this says.',
+    '0 keeps everything.' => '0 keeps everything.',
     'A {amount} rounding line was added so the invoice totals {total}.' => 'A {amount} rounding line was added so the invoice totals {total}.',
     'Access token rejected; refreshing and retrying once' => 'Access token rejected; refreshing and retrying once',
     'Account status' => 'Account status',
@@ -30,12 +33,10 @@ return [
     'An object template, rendered against the order.' => 'An object template, rendered against the order.',
     'Another process claimed this order first.' => 'Another process claimed this order first.',
     'Another process is sending this order to Exact Online right now.' => 'Another process is sending this order to Exact Online right now.',
-    'Anything but “Only when I ask” is a Pro feature, and all of them go through the queue so that an Exact Online outage can never hold up a checkout.' => 'Anything but “Only when I ask” is a Pro feature, and all of them go through the queue so that an Exact Online outage can never hold up a checkout.',
     'As soon as the order completes' => 'As soon as the order completes',
     'Asking VIES…' => 'Asking VIES…',
     'At least one VAT code’s rate could not be read from Exact Online, so the invoice total was not reconciled against the order total.' => 'At least one VAT code’s rate could not be read from Exact Online, so the invoice total was not reconciled against the order total.',
     'Automatic invoicing is switched off.' => 'Automatic invoicing is switched off.',
-    'Automatic invoicing, the queue, credit notes, per-tax-rate VAT mapping, VIES validation, Peppol and email delivery, payment write-back and the connection log are Pro features. Their settings are shown below but have no effect until you upgrade.' => 'Automatic invoicing, the queue, credit notes, per-tax-rate VAT mapping, VIES validation, Peppol and email delivery, payment write-back and the connection log are Pro features. Their settings are shown below but have no effect until you upgrade.',
     'Automation' => 'Automation',
     'Back to the order' => 'Back to the order',
     'Backfill' => 'Backfill',
@@ -77,7 +78,6 @@ return [
     'Credit note amounts' => 'Credit note amounts',
     'Credit note {number}' => 'Credit note {number}',
     'Credit notes' => 'Credit notes',
-    'Credit notes need Exactly Pro.' => 'Credit notes need Exactly Pro.',
     'Credit notes on refund' => 'Credit notes on refund',
     'Custom base URL' => 'Custom base URL',
     'Customer' => 'Customer',
@@ -113,6 +113,7 @@ return [
     'Error' => 'Error',
     'EU consumer (OSS) — destination VAT, reported through One Stop Shop' => 'EU consumer (OSS) — destination VAT, reported through One Stop Shop',
     'Every call Exactly makes to Exact Online lands here, with the payload and the response.' => 'Every call Exactly makes to Exact Online lands here, with the payload and the response.',
+    'Everything but “Only when I ask” goes through the queue, so an Exact Online outage can never hold up a checkout.' => 'Everything but “Only when I ask” goes through the queue, so an Exact Online outage can never hold up a checkout.',
     'ex VAT' => 'ex VAT',
     'Exact digital postbox' => 'Exact digital postbox',
     'Exact invoice ID' => 'Exact invoice ID',
@@ -122,6 +123,7 @@ return [
     'Exact Online accepted the item but returned no ID.' => 'Exact Online accepted the item but returned no ID.',
     'Exact Online answered {status} to the token request.' => 'Exact Online answered {status} to the token request.',
     'Exact Online documents' => 'Exact Online documents',
+    'Exact Online has this as a draft. A draft invoice is not in the ledger and not receivable until it is printed or sent — either process it in Exact, or set a delivery method in Exactly’s settings.' => 'Exact Online has this as a draft. A draft invoice is not in the ledger and not receivable until it is printed or sent — either process it in Exact, or set a delivery method in Exactly’s settings.',
     'Exact Online matches this exactly, character for character. Copy it — don’t retype it.' => 'Exact Online matches this exactly, character for character. Copy it — don’t retype it.',
     'Exact Online refresh tokens last 30 days. Connect again.' => 'Exact Online refresh tokens last 30 days. Connect again.',
     'Exact Online refused the authorisation: {error}' => 'Exact Online refused the authorisation: {error}',
@@ -232,7 +234,6 @@ return [
     'postbox' => 'postbox',
     'Preview payload' => 'Preview payload',
     'Previous' => 'Previous',
-    'Pro' => 'Pro',
     'Prospect' => 'Prospect',
     'Prune old entries' => 'Prune old entries',
     'Push through the queue' => 'Push through the queue',
@@ -279,8 +280,8 @@ return [
     'Sent' => 'Sent',
     'Sent to Exact Online as {label}.' => 'Sent to Exact Online as {label}.',
     'Settings' => 'Settings',
-    'Shipping' => 'Shipping',
     'shipping' => 'shipping',
+    'Shipping' => 'Shipping',
     'Shipping GL account' => 'Shipping GL account',
     'Shipping item code' => 'Shipping item code',
     'Short order number' => 'Short order number',
@@ -369,6 +370,5 @@ return [
     'Worth knowing' => 'Worth knowing',
     'your Exact user' => 'your Exact user',
     'Your reference' => 'Your reference',
-    'You’re running Exactly Lite.' => 'You’re running Exactly Lite.',
     '{checked} checked — {paid} paid, {outstanding} still open.' => '{checked} checked — {paid} paid, {outstanding} still open.',
 ];

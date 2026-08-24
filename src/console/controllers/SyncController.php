@@ -179,7 +179,7 @@ class SyncController extends Controller
     }
 
     /**
-     * Reconcile invoice payment status against Exact's open items (Pro).
+     * Reconcile invoice payment status against Exact's open items.
      */
     public function actionPayments(): int
     {

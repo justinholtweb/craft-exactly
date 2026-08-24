@@ -75,7 +75,7 @@ class Items extends Component
             ];
         }
 
-        if ($allowCreate && $settings->createMissingItems && Plugin::getInstance()->isPro()) {
+        if ($allowCreate && $settings->createMissingItems) {
             $created = $this->createItem($lineItem);
             $this->cacheItem($division, $sku, $lineItem, $created);
 
@@ -193,7 +193,7 @@ class Items extends Component
     /**
      * The revenue GL account for a line.
      *
-     * Per-product-type first (Pro) — that is how a merchant separates goods revenue from services
+     * Per-product-type first — that is how a merchant separates goods revenue from services
      * revenue without touching every product — then the default. Returning null is fine: Exact
      * falls back to the item's own `GLRevenue`, which is where most administrations keep it.
      */
@@ -202,7 +202,7 @@ class Items extends Component
         $settings = Plugin::getInstance()->getSettings();
         $ledger = Plugin::getInstance()->getLedger();
 
-        if (Plugin::getInstance()->isPro() && $settings->glAccountByProductType) {
+        if ($settings->glAccountByProductType) {
             $handle = $this->getProductTypeHandle($lineItem);
 
             if ($handle !== null) {

@@ -52,23 +52,9 @@ class Plugin extends BasePlugin
 {
     public const HANDLE = 'exactly';
 
-    public const EDITION_LITE = 'lite';
-    public const EDITION_PRO = 'pro';
-
     public string $schemaVersion = '5.0.0';
     public bool $hasCpSettings = true;
     public bool $hasCpSection = true;
-
-    /**
-     * @inheritdoc
-     */
-    public static function editions(): array
-    {
-        return [
-            self::EDITION_LITE,
-            self::EDITION_PRO,
-        ];
-    }
 
     /**
      * @inheritdoc
@@ -113,10 +99,7 @@ class Plugin extends BasePlugin
         }
 
         $this->_registerOrderEditPanel();
-
-        if ($this->isPro()) {
-            $this->_registerAutomaticTriggers();
-        }
+        $this->_registerAutomaticTriggers();
     }
 
     /**
@@ -126,14 +109,6 @@ class Plugin extends BasePlugin
     {
         return class_exists(\craft\commerce\Plugin::class)
             && Craft::$app->getPlugins()->isPluginEnabled('commerce');
-    }
-
-    /**
-     * Whether this install is licensed for the Pro feature set.
-     */
-    public function isPro(): bool
-    {
-        return $this->is(self::EDITION_PRO, '>=');
     }
 
     public function getOauth(): Oauth
@@ -236,7 +211,7 @@ class Plugin extends BasePlugin
             ];
         }
 
-        if ($this->isPro() && $user->checkPermission('exactly-viewLog')) {
+        if ($user->checkPermission('exactly-viewLog')) {
             $subNav['log'] = [
                 'label' => Craft::t('exactly', 'Log'),
                 'url' => 'exactly/log',
@@ -355,7 +330,6 @@ class Plugin extends BasePlugin
             return Craft::$app->getView()->renderTemplate('exactly/_order-panel', [
                 'order' => $order,
                 'documents' => $this->getDocuments()->getDocumentsForOrder((int)$order->id),
-                'isPro' => $this->isPro(),
                 'connected' => $this->getOauth()->isConnected(),
                 'canPush' => Craft::$app->getUser()->checkPermission('exactly-pushOrders'),
                 'canCredit' => Craft::$app->getUser()->checkPermission('exactly-creditOrders'),
@@ -364,7 +338,7 @@ class Plugin extends BasePlugin
     }
 
     /**
-     * The automatic triggers (Pro).
+     * The automatic triggers.
      *
      * All three go through `Sync::handleOrder()`, which queues rather than pushes. Nothing here is
      * allowed to fail an order save — an Exact Online outage must not be able to stop a customer
@@ -376,7 +350,7 @@ class Plugin extends BasePlugin
             Order::class,
             Order::EVENT_AFTER_COMPLETE_ORDER,
             function(Event $event) {
-                if ($this->getSettings()->getEffectivePushTrigger() !== 'completed') {
+                if ($this->getSettings()->pushTrigger !== 'completed') {
                     return;
                 }
 
@@ -392,7 +366,7 @@ class Plugin extends BasePlugin
             Order::class,
             Order::EVENT_AFTER_ORDER_PAID,
             function(Event $event) {
-                if ($this->getSettings()->getEffectivePushTrigger() !== 'paid') {
+                if ($this->getSettings()->pushTrigger !== 'paid') {
                     return;
                 }
 
@@ -408,7 +382,7 @@ class Plugin extends BasePlugin
             OrderHistories::class,
             OrderHistories::EVENT_ORDER_STATUS_CHANGE,
             function(OrderStatusEvent $event) {
-                if ($this->getSettings()->getEffectivePushTrigger() !== 'status') {
+                if ($this->getSettings()->pushTrigger !== 'status') {
                     return;
                 }
 

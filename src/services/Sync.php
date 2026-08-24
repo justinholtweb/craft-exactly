@@ -37,7 +37,7 @@ class Sync extends Component
     {
         $plugin = Plugin::getInstance();
         $settings = $plugin->getSettings();
-        $trigger = $settings->getEffectivePushTrigger();
+        $trigger = $settings->pushTrigger;
 
         if ($trigger === 'manual') {
             return ['eligible' => false, 'reason' => Craft::t('exactly', 'Automatic invoicing is switched off.')];
@@ -277,21 +277,13 @@ class Sync extends Component
     }
 
     /**
-     * A credit note for a refunded order (Pro).
+     * A credit note for a refunded order.
      *
      * @return array{success: bool, message: string, document: Document|null}
      */
     public function creditNote(Order $order, bool $force = false): array
     {
         $plugin = Plugin::getInstance();
-
-        if (!$plugin->isPro()) {
-            return [
-                'success' => false,
-                'message' => Craft::t('exactly', 'Credit notes need Exactly Pro.'),
-                'document' => null,
-            ];
-        }
 
         $division = $plugin->getOauth()->getDivision();
         $invoice = $division !== null
@@ -351,7 +343,7 @@ class Sync extends Component
             'failed' => $counts[Document::STATUS_FAILED] ?? 0,
             'queued' => ($counts[Document::STATUS_QUEUED] ?? 0) + ($counts[Document::STATUS_SENDING] ?? 0),
             'pending' => $counts[Document::STATUS_PENDING] ?? 0,
-            'trigger' => $plugin->getSettings()->getEffectivePushTrigger(),
+            'trigger' => $plugin->getSettings()->pushTrigger,
             'daysUntilExpiry' => $plugin->getOauth()->getConnection()?->getDaysUntilExpiry(),
             'lastCall' => $plugin->getOauth()->getConnection()?->dateLastCall,
         ];

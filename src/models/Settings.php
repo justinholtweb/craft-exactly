@@ -7,7 +7,6 @@ use craft\base\Model;
 use craft\helpers\App;
 use craft\helpers\UrlHelper;
 use justinholtweb\exactly\helpers\Vat;
-use justinholtweb\exactly\Plugin;
 
 /**
  * Exactly settings.
@@ -74,7 +73,6 @@ class Settings extends Model
      * `status` — when the order reaches one of `triggerStatusHandles`.
      * `paid` — when the order is fully paid.
      *
-     * Everything but `manual` is Pro.
      */
     public string $pushTrigger = 'manual';
 
@@ -161,7 +159,7 @@ class Settings extends Model
     public bool $createMissingAccounts = true;
 
     /**
-     * Keep an existing Exact account's address in step with the order's (Pro). Off by default:
+     * Keep an existing Exact account's address in step with the order's. Off by default:
      * the merchant's own bookkeeping edits should not be overwritten by a checkout.
      */
     public bool $updateExistingAccounts = false;
@@ -195,7 +193,7 @@ class Settings extends Model
     public string $itemStrategy = 'sku';
 
     /**
-     * Create an Exact item for a SKU that has none (Pro).
+     * Create an Exact item for a SKU that has none.
      */
     public bool $createMissingItems = false;
 
@@ -210,7 +208,7 @@ class Settings extends Model
     public string $defaultGlAccountCode = '';
 
     /**
-     * Commerce product type handle => GL account code (Pro).
+     * Commerce product type handle => GL account code.
      *
      * @var array<string, string>
      */
@@ -232,7 +230,7 @@ class Settings extends Model
     public array $vatCodeByTreatment = [];
 
     /**
-     * Commerce tax rate ID => Exact VAT code (Pro). Takes precedence over the treatment map when
+     * Commerce tax rate ID => Exact VAT code. Takes precedence over the treatment map when
      * a line actually carries that rate, because a merchant with reduced rates knows better than
      * any inference.
      *
@@ -246,7 +244,7 @@ class Settings extends Model
     public bool $requireValidVatNumber = true;
 
     /**
-     * Check the number against the EU VIES service before applying reverse charge (Pro).
+     * Check the number against the EU VIES service before applying reverse charge.
      * Fails *closed*: an unverifiable number is treated as a consumer sale, which charges VAT.
      */
     public bool $viesValidation = false;
@@ -256,7 +254,7 @@ class Settings extends Model
      */
     public int $viesTimeout = 6;
 
-    // Delivery (Pro)
+    // Delivery
     // -------------------------------------------------------------------------
 
     /**
@@ -275,7 +273,7 @@ class Settings extends Model
     public string $senderEmailAddress = '';
     public string $extraText = '';
 
-    // Automation (Pro)
+    // Automation
     // -------------------------------------------------------------------------
 
     /**
@@ -324,7 +322,7 @@ class Settings extends Model
     public bool $loggingEnabled = true;
 
     /**
-     * Store request and response bodies on log rows (Pro).
+     * Store request and response bodies on log rows.
      */
     public bool $logPayloads = true;
 
@@ -513,36 +511,6 @@ class Settings extends Model
         }
 
         return $missing;
-    }
-
-    /**
-     * Effective retention, respecting the edition. Lite keeps a short tail so the table cannot
-     * grow without bound on an install that has no log screen to prune it from.
-     */
-    public function getEffectiveLogRetentionDays(): int
-    {
-        $plugin = Plugin::getInstance();
-
-        if ($plugin !== null && !$plugin->isPro()) {
-            return 7;
-        }
-
-        return $this->logRetentionDays;
-    }
-
-    /**
-     * The trigger actually in force. Lite has no automation at all, and silently running one
-     * would be worse than ignoring the setting.
-     */
-    public function getEffectivePushTrigger(): string
-    {
-        $plugin = Plugin::getInstance();
-
-        if ($plugin !== null && !$plugin->isPro()) {
-            return 'manual';
-        }
-
-        return $this->pushTrigger;
     }
 
     /**

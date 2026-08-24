@@ -4,7 +4,8 @@
 
 Exactly turns Craft Commerce orders into sales invoices in an **Exact Online** administration, works
 out the EU VAT treatment, and reconciles the total before anything is sent. Distributed as
-`justinholtweb/craft-exactly`. **Lite (free) + Pro.**
+`justinholtweb/craft-exactly`. **One paid edition, $99 / $79 renewal** — no `editions()` override,
+no feature gating anywhere in the code.
 
 ## Tech Stack
 
@@ -97,6 +98,11 @@ behaviour rather than the documentation.
 - **Craft's `Command::upsert()` derives the update half from the insert half**, so *everything* goes
   in `$insertColumns` and `$updateColumns` stays `true`. A key/value split leaves `NOT NULL` columns
   null on the insert path — i.e. on the first run, the one that matters.
+- **A user's preferred CP language is validated against `getAppLocaleIds()`** — the 31 locales
+  Craft ships its own translations for. `nl-BE` and `fr-BE` are not among them, so
+  `User::getPreferredLanguage()` returns null for them and the overlay never loads from the
+  language menu. `defaultCpLanguage` is returned *unvalidated*, so that is the way in. Verified
+  both ways over HTTP, not reasoned from the source.
 - **`Console::stdout()` writes to `\STDOUT` directly**, so `ob_start()` captures nothing from a
   console command. Assert on the exit code.
 - **`stdout()` passes every extra argument to `Console::ansiFormat()`**, so a null colour is not "no
@@ -141,7 +147,11 @@ Project config is contended in that shared harness and a long console script tha
 
 ## Coding conventions
 
-- `Craft::t('exactly', '…')` for user-facing strings; `src/translations/en/exactly.php` lists them all
+- `Craft::t('exactly', '…')` for user-facing strings; `src/translations/en/exactly.php` lists them
+  all, and `nl`, `de`, `fr` and `es` are full catalogues beside it. `nl-BE` and `fr-BE` are
+  *overlays* — Yii's `PhpMessageSource` merges them over `nl`/`fr`, so only strings that genuinely
+  differ belong there. Regenerate `en` with the extractor after changing any copy, then reconcile
+  the others.
 - Business logic in services; controllers stay thin
 - Never nest a `<form>` in a CP template — post secondary actions with `Craft.sendActionRequest`
 - Never mark plugin settings `required`

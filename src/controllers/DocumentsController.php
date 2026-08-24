@@ -53,7 +53,6 @@ class DocumentsController extends Controller
             'summary' => $plugin->getSync()->getSummary(),
             'page' => $page,
             'perPage' => $perPage,
-            'isPro' => $plugin->isPro(),
         ]);
     }
 
@@ -68,10 +67,9 @@ class DocumentsController extends Controller
         return $this->renderTemplate('exactly/documents/_detail', [
             'document' => $document,
             'order' => $document->getOrder(),
-            'entries' => Plugin::getInstance()->isPro() && $document->orderId !== null
+            'entries' => $document->orderId !== null
                 ? Plugin::getInstance()->getLog()->getEntries(['orderId' => $document->orderId], 25)
                 : [],
-            'isPro' => Plugin::getInstance()->isPro(),
         ]);
     }
 
@@ -162,7 +160,7 @@ class DocumentsController extends Controller
     }
 
     /**
-     * Issue a credit note against an already-invoiced order (Pro).
+     * Issue a credit note against an already-invoiced order.
      */
     public function actionCredit(): Response
     {
@@ -225,7 +223,7 @@ class DocumentsController extends Controller
     }
 
     /**
-     * Reconcile payment status against Exact's open items (Pro).
+     * Reconcile payment status against Exact's open items.
      */
     public function actionSyncPayments(): Response
     {

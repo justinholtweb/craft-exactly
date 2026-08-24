@@ -20,7 +20,7 @@ use justinholtweb\exactly\Plugin;
  *
  * The order of precedence, most specific first:
  *
- * 1. **The Commerce tax rate that was actually applied to the line** (Pro). If the merchant has
+ * 1. **The Commerce tax rate that was actually applied to the line.** If the merchant has
  *    modelled reduced rates in Commerce, that mapping is authoritative — no inference beats
  *    knowing what the customer was really charged.
  * 2. **The VAT treatment of the sale** — domestic, intra-community reverse charge, EU consumer
@@ -77,11 +77,7 @@ class Vat extends Component
 
         // VIES only ever *downgrades* reverse charge to a consumer sale, so there is no point
         // asking about anything else.
-        if (
-            $treatment === VatHelper::TREATMENT_REVERSE_CHARGE
-            && $settings->viesValidation
-            && Plugin::getInstance()->isPro()
-        ) {
+        if ($treatment === VatHelper::TREATMENT_REVERSE_CHARGE && $settings->viesValidation) {
             $validated = $this->validateWithVies($vatNumber, $buyerCountry);
 
             if ($validated !== true) {
@@ -160,7 +156,7 @@ class Vat extends Component
     {
         $settings = Plugin::getInstance()->getSettings();
 
-        if ($lineItem !== null && Plugin::getInstance()->isPro() && $settings->vatCodeByTaxRate) {
+        if ($lineItem !== null && $settings->vatCodeByTaxRate) {
             foreach ($this->getTaxRateIdsForLine($order, $lineItem) as $rateId) {
                 $code = trim((string)($settings->vatCodeByTaxRate[$rateId] ?? ''));
 

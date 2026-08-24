@@ -6,9 +6,8 @@ what happened.
 
 Requires **Craft CMS 5.3+**, **Craft Commerce 5.0+** and **PHP 8.2+**.
 
-- **Lite** (free) — connect, push orders by hand, customer and item matching, the documents ledger.
-- **Pro** — automatic invoicing, the queue, credit notes, per-tax-rate VAT mapping, VIES
-  validation, Peppol / email / postbox delivery, payment write-back, and the connection log.
+**$99 per Craft installation, $79 a year to keep updating.** One edition — everything below is in
+it. There is no feature you have to buy twice.
 
 ---
 
@@ -35,7 +34,7 @@ shipping country and the customer's VAT number, and uses the code you mapped for
 VAT numbers are read from Craft 5's own **Organization Tax ID** address attribute with no
 configuration, normalised (`NL 8025.13.146.B.01` → `NL802513146B01`), and structurally validated per
 member state — including the two prefixes that are not the country code, `EL` for Greece and `XI`
-for Northern Ireland. Pro can check the number against the EU's **VIES** service before applying
+for Northern Ireland. It can also check the number against the EU's **VIES** service before applying
 reverse charge.
 
 Reverse charge **fails closed**: a VAT number that cannot be confirmed is treated as a consumer sale,
@@ -111,6 +110,24 @@ and a page that could would be one crawler away from a duplicate invoice.
 | `craft.exactly.isPaid(order)` | Whether Exact reports it paid (`null` if unknown) |
 | `craft.exactly.vatTreatment(order)` | `domestic`, `reverse-charge`, `oss`, `export` |
 | `craft.exactly.isConnected()` | Whether the Exact connection is live |
+
+---
+
+## Languages
+
+The control panel is translated into **Dutch**, **German**, **French** and **Spanish**, following
+each market's own bookkeeping vocabulary rather than a literal rendering of the English —
+*administratie*, *btw verlegd*, *Umsatzsteuer*, *autoliquidation*, *inversión del sujeto pasivo*.
+France issues an *avoir*, Spain a *factura rectificativa*, Germany a *Gutschrift*; a literal
+"credit note" would be wrong in all three. Those are Exact Online's regional markets; anywhere else
+falls back to English.
+
+**Flemish and Belgian French** ship too, as `nl-BE` and `fr-BE` overlays — Belgium says *note de
+crédit* where France says *avoir*, and a Flemish bookkeeper *punt af* where a Dutch one *lettert
+af*. One caveat: Craft validates a user's preferred control-panel language against the 31 locales
+it ships its own translations for, and neither `nl-BE` nor `fr-BE` is among them, so they cannot be
+picked from the language menu. To use them, set them as `defaultCpLanguage` in
+`config/general.php` — that setting is not validated, and the overlay loads.
 
 ---
 
