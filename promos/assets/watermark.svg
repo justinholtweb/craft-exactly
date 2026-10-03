@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" fill="#ffffff">
+  <!-- The double rule from ../src/icon-mask.svg, tile stripped: at watermark scale the tile reads
+       as a grey box across the slide rather than as the mark. -->
+  <rect x="20" y="31" width="60" height="13" rx="3.5"/>
+  <rect x="20" y="56" width="60" height="13" rx="3.5"/>
+</svg>

@@ -26,6 +26,10 @@ class Connection extends Model
     public ?string $userEmail = null;
     public ?int $dailyLimit = null;
     public ?int $dailyRemaining = null;
+    /**
+     * Epoch **milliseconds** at which the daily bucket refills (`X-RateLimit-Reset`).
+     */
+    public ?int $dailyReset = null;
     public ?int $minutelyLimit = null;
     public ?int $minutelyRemaining = null;
     /**
@@ -128,6 +132,28 @@ class Connection extends Model
         $seconds = (int)ceil($this->minutelyReset / 1000) - time() + 1;
 
         return max(0, min(120, $seconds));
+    }
+
+    /**
+     * Seconds until the daily budget refills, or 0 when a call may be made.
+     *
+     * Only a *known, future* reset time blocks. Once it has passed, or when none was ever stored
+     * (a row from before the reset was recorded), the call goes ahead: the response is the only
+     * thing that can refresh `dailyRemaining`, so refusing pre-emptively without an end time would
+     * refuse for ever. If the budget really is still spent, Exact answers 429 with fresh headers.
+     */
+    public function getSecondsUntilDailyReset(): int
+    {
+        if ($this->dailyRemaining === null || $this->dailyRemaining > 0) {
+            return 0;
+        }
+
+        if ($this->dailyReset === null || $this->dailyReset <= 0) {
+            return 0;
+        }
+
+        // Milliseconds, not seconds.
+        return max(0, (int)ceil($this->dailyReset / 1000) - time() + 1);
     }
 
     /**

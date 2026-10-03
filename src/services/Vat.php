@@ -23,7 +23,11 @@ use justinholtweb\exactly\Plugin;
  * 1. **The Commerce tax rate that was actually applied to the line.** If the merchant has
  *    modelled reduced rates in Commerce, that mapping is authoritative — no inference beats
  *    knowing what the customer was really charged.
- * 2. **The VAT treatment of the sale** — domestic, intra-community reverse charge, EU consumer
+ * 2. **An exempt tax category.** A line whose Commerce tax category is marked exempt in the
+ *    settings, and which carried no tax, takes the Exempt treatment's code. Only untaxed lines: a
+ *    line that was charged VAT keeps the code for what was charged, or the invoice total would
+ *    not match the payment.
+ * 3. **The VAT treatment of the sale** — domestic, intra-community reverse charge, EU consumer
  *    (OSS), or export. Derived from the shipping country and the customer's VAT number.
  *
  * The reverse-charge decision fails *closed*: an unverifiable VAT number is treated as a consumer
@@ -166,7 +170,81 @@ class Vat extends Component
             }
         }
 
+        // A line in an exempt category; or — for shipping and discount, which have no category of
+        // their own — an order whose every line is exempt and which carried no tax anywhere. Those
+        // follow the goods: a coupon on an exempt course is not a 21% discount, and pricing it as
+        // one is a 21%-of-the-discount gap reconciliation would rightly refuse.
+        if ($lineItem !== null ? $this->isExemptLine($lineItem) : $this->isExemptOrder($order)) {
+            $code = $settings->getVatCodeForTreatment(VatHelper::TREATMENT_EXEMPT);
+
+            // Unmapped, fall through to the sale's treatment; the settings screen lists Exempt as
+            // unmapped once a category is marked exempt.
+            if ($code !== null) {
+                return $code;
+            }
+        }
+
         return $settings->getVatCodeForTreatment($treatment);
+    }
+
+    /**
+     * Whether a line is a VAT-exempt supply: its tax category is marked exempt in the settings,
+     * and Commerce charged it no tax (neither added nor included).
+     */
+    public function isExemptLine(LineItem $lineItem): bool
+    {
+        $exempt = Plugin::getInstance()->getSettings()->getExemptTaxCategoryIds();
+
+        if ($exempt === [] || !in_array((int)$lineItem->taxCategoryId, $exempt, true)) {
+            return false;
+        }
+
+        return abs((float)$lineItem->getTax()) < 0.005 && abs((float)$lineItem->getTaxIncluded()) < 0.005;
+    }
+
+    /**
+     * Whether every line on the order is exempt and Commerce charged no tax anywhere on it.
+     *
+     * Mixed orders do not qualify: their shipping and discount keep the order's treatment, as
+     * before. Splitting a discount across exempt and taxed lines would need one discount line per
+     * VAT code; until then a mixed order with a discount may be refused by reconciliation, which
+     * says so rather than booking a wrong total.
+     */
+    public function isExemptOrder(Order $order): bool
+    {
+        $lineItems = $order->getLineItems();
+
+        if ($lineItems === [] || Plugin::getInstance()->getSettings()->getExemptTaxCategoryIds() === []) {
+            return false;
+        }
+
+        foreach ($lineItems as $lineItem) {
+            if (!$this->isExemptLine($lineItem)) {
+                return false;
+            }
+        }
+
+        return abs((float)$order->getTotalTax()) < 0.005 && abs((float)$order->getTotalTaxIncluded()) < 0.005;
+    }
+
+    /**
+     * Every Commerce tax category, for the exempt checkboxes on the settings screen.
+     *
+     * @return array<int, array{label: string, value: string}>
+     */
+    public function getCommerceTaxCategoryOptions(): array
+    {
+        if (!Plugin::commerceIsReady()) {
+            return [];
+        }
+
+        $options = [];
+
+        foreach (\craft\commerce\Plugin::getInstance()->getTaxCategories()->getAllTaxCategories() as $category) {
+            $options[] = ['label' => (string)$category->name, 'value' => (string)$category->id];
+        }
+
+        return $options;
     }
 
     /**

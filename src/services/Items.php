@@ -38,7 +38,9 @@ class Items extends Component
     /**
      * Resolve the Exact item GUID for a line.
      *
-     * @return array{id: string, code: string|null, created: bool, fallback: bool}
+     * `pending` is true (and `id` empty) only for a preview of a SKU the send would create.
+     *
+     * @return array{id: string, code: string|null, created: bool, fallback: bool, pending?: bool}
      * @throws ApiException
      */
     public function resolveForLineItem(LineItem $lineItem, bool $allowCreate = true): array
@@ -73,6 +75,12 @@ class Items extends Component
                 'created' => false,
                 'fallback' => false,
             ];
+        }
+
+        // A preview of a SKU that the send would create: say so, with no item, rather than show
+        // the fallback item the send would not use (or throw for want of one).
+        if (!$allowCreate && $settings->createMissingItems) {
+            return ['id' => '', 'code' => null, 'created' => false, 'fallback' => false, 'pending' => true];
         }
 
         if ($allowCreate && $settings->createMissingItems) {

@@ -1,0 +1,527 @@
+<!DOCTYPE html>
+<!-- handmade: hand-tuned deck -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Exactly — Plugin Store promos</title>
+<link rel="stylesheet" href="fonts.css">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  :root {
+    --charcoal: #0f0f1a;
+    --charcoal-light: #1a1a2e;
+    --charcoal-lighter: #252540;
+    --accent: #E1141D;
+    --accent-light: #FF6B70;
+    --gold: #ffd166;
+    --green: #5ee0a0;
+    --off-white: #f0f0f5;
+  }
+
+  html { background: #000; }
+
+  body {
+    font-family: 'Inter', -apple-system, sans-serif;
+    color: var(--off-white);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ---- slide shell ---------------------------------------------------- */
+  .slide {
+    position: relative;
+    width: 1920px;
+    height: 1080px;
+    overflow: hidden;
+    background:
+      radial-gradient(ellipse at 85% 15%, rgba(225, 20, 29, 0.26) 0%, transparent 40%),
+      radial-gradient(ellipse at 65% 5%,  rgba(255, 107, 112, 0.10) 0%, transparent 35%),
+      radial-gradient(ellipse at 15% 85%, rgba(255, 209, 102, 0.07) 0%, transparent 40%),
+      radial-gradient(ellipse at 35% 95%, rgba(225, 20, 29, 0.12) 0%, transparent 35%),
+      linear-gradient(135deg, #0f0f1a 0%, #170f16 30%, #1c1118 60%, #0f0f1a 100%);
+  }
+
+  /* Oversized watermark: the double rule from icon-mask.svg with the red tile stripped — at this
+     size the tile reads as a hard-edged box across the slide. Anchored bottom-right and running
+     off the edge, away from the headline. */
+  .slide::after {
+    content: '';
+    position: absolute;
+    top: 30%;
+    right: -18%;
+    width: 1300px;
+    height: 1300px;
+    background: url('assets/watermark.svg') no-repeat center / contain;
+    opacity: 0.026;
+    pointer-events: none;
+  }
+
+  /* The cover has the icon itself; a watermark behind it reads as its shadow. */
+  .cover::after { display: none; }
+
+  .slide::before {
+    content: '';
+    position: absolute;
+    inset: 0 0 auto 0;
+    height: 6px;
+    background: linear-gradient(90deg, var(--accent), var(--accent-light), var(--gold), var(--accent));
+    z-index: 5;
+  }
+
+  .inner {
+    position: relative;
+    z-index: 2;
+    height: 100%;
+    padding: 112px 120px;
+    display: flex;
+    align-items: center;
+    gap: 70px;
+  }
+
+  /* ---- type ------------------------------------------------------------ */
+  .eyebrow {
+    display: flex;
+    align-items: center;
+    gap: 18px;
+    font-size: 20px;
+    font-weight: 600;
+    letter-spacing: 0.26em;
+    text-transform: uppercase;
+    color: var(--accent-light);
+    margin-bottom: 32px;
+  }
+  .eyebrow .rule {
+    width: 58px;
+    height: 3px;
+    border-radius: 2px;
+    background: var(--accent-light);
+  }
+
+  h1, h2 {
+    font-family: 'Jersey 20', sans-serif;
+    font-weight: 400;
+    line-height: 0.92;
+    letter-spacing: 0.005em;
+  }
+
+  .gradient-text {
+    background: linear-gradient(100deg, #E1141D 0%, #FF6B70 40%, #ffd166 72%, #FF6B70 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+
+  .lede {
+    font-size: 31px;
+    line-height: 1.45;
+    color: rgba(240, 240, 245, 0.70);
+  }
+
+  .mono { font-family: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace; }
+
+  .copy { flex: 0 0 auto; }
+  .copy h2 { font-size: 92px; margin-bottom: 28px; }
+
+  .points { list-style: none; margin-top: 38px; display: flex; flex-direction: column; gap: 16px; }
+  .points li {
+    display: flex;
+    gap: 16px;
+    font-size: 25px;
+    line-height: 1.42;
+    color: rgba(240, 240, 245, 0.66);
+  }
+  .points li::before {
+    content: '';
+    flex: 0 0 auto;
+    width: 10px;
+    height: 10px;
+    margin-top: 13px;
+    border-radius: 50%;
+    background: var(--accent);
+  }
+  .points b { color: var(--off-white); font-weight: 600; }
+
+  /* ---- cover ----------------------------------------------------------- */
+  .cover .inner { gap: 90px; }
+  .cover .copy { flex: 1 1 auto; }
+  .cover h1 { font-size: 176px; margin-bottom: 26px; }
+  .cover .tagline {
+    font-size: 44px;
+    line-height: 1.28;
+    color: rgba(240, 240, 245, 0.80);
+    margin-bottom: 46px;
+    max-width: 960px;
+  }
+  .cover .badges { display: flex; gap: 18px; align-items: center; flex-wrap: wrap; }
+  .badge {
+    font-size: 24px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    padding: 14px 26px;
+    border-radius: 999px;
+    border: 2px solid rgba(255, 107, 112, 0.42);
+    color: rgba(240, 240, 245, 0.85);
+  }
+  .badge.price { background: var(--accent); border-color: var(--accent); color: #fff; font-size: 30px; padding: 12px 30px; letter-spacing: 0.02em; }
+  .cover .mark img { width: 420px; height: 420px; display: block; border-radius: 94px; box-shadow: 0 40px 100px rgba(225, 20, 29, 0.28); }
+
+  /* ---- control-panel frames --------------------------------------------
+     Crops are CSS, not files: the viewport has a fixed height and the image is offset inside it,
+     so retaking a screenshot never means recutting a PNG. */
+  .frame {
+    border-radius: 14px;
+    overflow: hidden;
+    background: #e4edf6;
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    box-shadow: 0 40px 90px rgba(0, 0, 0, 0.55), 0 6px 18px rgba(0, 0, 0, 0.35);
+    position: relative;
+  }
+  .frame .chrome {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 12px 18px;
+    background: linear-gradient(180deg, #2a2a3d 0%, #21212f 100%);
+    border-bottom: 1px solid rgba(0, 0, 0, 0.35);
+  }
+  .frame .chrome b { width: 12px; height: 12px; border-radius: 50%; }
+  .frame .chrome b:nth-child(1) { background: #ff5f57; }
+  .frame .chrome b:nth-child(2) { background: #febc2e; }
+  .frame .chrome b:nth-child(3) { background: #28c840; }
+  .frame .chrome em {
+    margin-left: 12px;
+    font-style: normal;
+    font-size: 18px;
+    letter-spacing: 0.02em;
+    color: rgba(240, 240, 245, 0.48);
+  }
+  .frame .vp { position: relative; overflow: hidden; }
+  .frame .vp img { display: block; position: absolute; left: 0; }
+  .frame.fade .vp::after {
+    content: '';
+    position: absolute;
+    inset: auto 0 0 0;
+    height: 120px;
+    background: linear-gradient(180deg, rgba(228,237,246,0) 0%, rgba(228,237,246,0.94) 80%, #e4edf6 100%);
+  }
+
+  .tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 12px;
+    font-size: 19px;
+    font-weight: 600;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: rgba(240, 240, 245, 0.55);
+    margin: 0 0 14px 4px;
+  }
+  .tag i { width: 12px; height: 12px; border-radius: 50%; display: block; }
+  .tag.ok i { background: var(--green); }
+  .tag.no i { background: var(--accent); }
+
+  /* The 1077px crops (slides 4 and 6) end at the CP card's edge (1053px), so `.cp` draws them at
+     1043px inside the 1020px stack and the card's right edge meets the frame's. The full-page crops
+     (slides 2, 5 and 7) keep the CP's own 24px gutter and are drawn at the stack width. */
+  .stack { flex: 0 0 1020px; min-width: 0; display: flex; flex-direction: column; gap: 30px; }
+  .frame .vp img.cp { width: 1043px; }
+
+  /* ---- VAT matrix (slide 3) -------------------------------------------- */
+  .vat {
+    flex: 1 1 auto;
+    border-radius: 14px;
+    border: 1px solid rgba(255,255,255,0.09);
+    background: rgba(15, 15, 26, 0.74);
+    padding: 34px 40px 30px;
+  }
+  .vat table { width: 100%; border-collapse: collapse; }
+  .vat thead th {
+    text-align: left;
+    font-size: 16px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: rgba(240,240,245,0.42);
+    font-weight: 600;
+    padding: 0 12px 16px;
+    white-space: nowrap;
+  }
+  .vat td { padding: 20px 12px; border-top: 1px solid rgba(255,255,255,0.07); vertical-align: top; }
+  .vat .who b { display: block; font-size: 24px; color: var(--off-white); font-weight: 600; }
+  .vat .who span { display: block; font-size: 19px; color: rgba(240,240,245,0.48); margin-top: 4px; }
+  .vat .num { font-family: 'JetBrains Mono', ui-monospace, Menlo, monospace; font-size: 19px; color: rgba(240,240,245,0.62); white-space: nowrap; }
+  .vat .num .dim { color: rgba(240,240,245,0.32); }
+  .vat .treat { font-size: 23px; font-weight: 600; color: var(--accent-light); white-space: nowrap; }
+  .vat .treat small { display: block; font-size: 18px; font-weight: 400; color: rgba(240,240,245,0.48); margin-top: 4px; }
+  .vat .code { font-family: 'JetBrains Mono', ui-monospace, Menlo, monospace; font-size: 22px; color: var(--gold); white-space: nowrap; }
+  .vat .code small { color: rgba(240,240,245,0.42); font-size: 18px; }
+  .vat .foot {
+    margin-top: 18px;
+    padding-top: 22px;
+    border-top: 1px solid rgba(255,255,255,0.07);
+    font-size: 21px;
+    line-height: 1.5;
+    color: rgba(240,240,245,0.55);
+  }
+  .vat .foot code { font-family: 'JetBrains Mono', ui-monospace, Menlo, monospace; font-size: 19px; color: rgba(240,240,245,0.8); }
+
+  /* ---- wire (slide 5) ---------------------------------------------------- */
+  .wire {
+    margin-top: 40px;
+    border-radius: 14px;
+    border: 1px solid rgba(255,255,255,0.09);
+    background: rgba(15,15,26,0.78);
+    padding: 26px 30px;
+    font-family: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+    font-size: 19px;
+    line-height: 1.7;
+    color: rgba(240,240,245,0.62);
+  }
+  .wire div + div { margin-top: 14px; }
+  .wire .cmd { color: rgba(240,240,245,0.42); }
+  .wire .ok { color: var(--green); }
+  .wire .skip { color: var(--gold); }
+
+  /* ---- console (slide 7) ------------------------------------------------- */
+  .term {
+    margin-top: 38px;
+    border-radius: 14px;
+    border: 1px solid rgba(255,255,255,0.09);
+    background: rgba(10,10,18,0.86);
+    padding: 26px 30px;
+    font-family: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+    font-size: 19px;
+    line-height: 1.85;
+    color: rgba(240,240,245,0.82);
+    white-space: pre;
+  }
+  .term .p { color: var(--accent-light); }
+  .term .c { color: rgba(240,240,245,0.38); }
+
+  /* ---- footer lockup --------------------------------------------------- */
+  .footer {
+    position: absolute;
+    left: 120px;
+    bottom: 46px;
+    z-index: 4;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    font-size: 21px;
+    color: rgba(240, 240, 245, 0.42);
+  }
+  .footer img { width: 38px; height: 38px; border-radius: 9px; }
+  .footer b { color: rgba(240, 240, 245, 0.72); font-weight: 600; }
+
+  /* Only render the requested slide when screenshotting */
+  body.single .slide { display: none; }
+  body.single .slide.active { display: block; }
+</style>
+</head>
+<body>
+
+<!-- 1 · Cover ============================================================ -->
+<section class="slide cover" data-n="1">
+  <div class="inner">
+    <div class="copy">
+      <div class="eyebrow"><span class="rule"></span> Craft Commerce 5 · Exact Online</div>
+      <h1 class="gradient-text">Exactly</h1>
+      <p class="tagline">Orders become Exact Online sales invoices — EU VAT worked out, and the total proven before anything is sent.</p>
+      <div class="badges">
+        <span class="badge price">$99</span>
+        <span class="badge">Renewal $79/yr</span>
+        <span class="badge">One edition</span>
+      </div>
+    </div>
+    <div class="mark"><img src="assets/icon.svg" alt=""></div>
+  </div>
+  <div class="footer"><img src="assets/icon.svg" alt=""> <b>Exactly</b> &nbsp;·&nbsp; justinholt.com/plugins/craft-exactly</div>
+</section>
+
+<!-- 2 · Preview payload (real CP screenshot) ============================= -->
+<section class="slide" data-n="2">
+  <div class="inner">
+    <div class="copy" style="width: 590px;">
+      <div class="eyebrow"><span class="rule"></span> Preview payload</div>
+      <h2>See exactly<br>what Exact<br>will get</h2>
+      <p class="lede">The preview is built by the same code that does the sending. Not an approximation — the payload itself.</p>
+      <ul class="points">
+        <li><span>Reconciliation table on every order</span></li>
+        <li><span>Nothing is created in Exact by looking</span></li>
+      </ul>
+    </div>
+    <div class="stack">
+      <figure class="frame fade">
+        <div class="chrome"><b></b><b></b><b></b><em>Commerce → Order → Preview payload</em></div>
+        <div class="vp" style="height: 800px;"><img src="shots/exactly-preview.png" style="width: 1020px; top: 0;" alt=""></div>
+      </figure>
+    </div>
+  </div>
+  <div class="footer"><img src="assets/icon.svg" alt=""> <b>Exactly</b> &nbsp;·&nbsp; justinholt.com/plugins/craft-exactly</div>
+</section>
+
+<!-- 3 · EU VAT ============================================================ -->
+<section class="slide" data-n="3">
+  <div class="inner">
+    <div class="copy" style="width: 590px;">
+      <div class="eyebrow"><span class="rule"></span> EU VAT</div>
+      <h2>Four ways<br>to tax a sale.<br>Worked out.</h2>
+      <p class="lede">From the shipping country and the customer’s VAT number — read from Craft’s own Organization Tax ID. You map one Exact VAT code to each.</p>
+      <ul class="points">
+        <li><span><b>Reverse charge fails closed:</b> an unconfirmed number pays VAT</span></li>
+        <li><span>Optional check against the EU’s VIES</span></li>
+      </ul>
+    </div>
+    <div class="vat">
+      <table>
+        <thead><tr><th>Customer</th><th>VAT number</th><th>Treatment</th><th>Code</th></tr></thead>
+        <tbody>
+          <tr>
+            <td class="who"><b>Sanne de Vries</b><span>Utrecht, NL · consumer</span></td>
+            <td class="num"><span class="dim">—</span></td>
+            <td class="treat">Domestic<small>same country as the administration</small></td>
+            <td class="code">2 <small>21%</small></td>
+          </tr>
+          <tr>
+            <td class="who"><b>Brauhaus Kessler GmbH</b><span>Bamberg, DE · business</span></td>
+            <td class="num">DE811907980</td>
+            <td class="treat">Reverse charge<small>intra-community supply</small></td>
+            <td class="code">6 <small>0%</small></td>
+          </tr>
+          <tr>
+            <td class="who"><b>Camille Peeters</b><span>Gent, BE · consumer</span></td>
+            <td class="num"><span class="dim">—</span></td>
+            <td class="treat">EU consumer (OSS)<small>destination VAT</small></td>
+            <td class="code">OSS <small>21%</small></td>
+          </tr>
+          <tr>
+            <td class="who"><b>Harbor &amp; Pine Ltd</b><span>Portland, US · business</span></td>
+            <td class="num"><span class="dim">—</span></td>
+            <td class="treat">Export<small>outside the EU</small></td>
+            <td class="code">7 <small>0%</small></td>
+          </tr>
+        </tbody>
+      </table>
+      <p class="foot">Numbers are normalised and checked per member state: <code>NL 8025.13.146.B.01</code> → <code>NL802513146B01</code> — including <code>EL</code> for Greece and <code>XI</code> for Northern Ireland.</p>
+    </div>
+  </div>
+  <div class="footer"><img src="assets/icon.svg" alt=""> <b>Exactly</b> &nbsp;·&nbsp; justinholt.com/plugins/craft-exactly</div>
+</section>
+
+<!-- 4 · Reconciliation (real CP screenshots) ============================= -->
+<section class="slide" data-n="4">
+  <div class="inner">
+    <div class="copy" style="width: 590px;">
+      <div class="eyebrow"><span class="rule"></span> Reconciliation</div>
+      <h2>Checks the<br>arithmetic<br>before it sends</h2>
+      <p class="lede">Exact computes VAT from the line codes. Exactly predicts that total and compares it with what the customer actually paid.</p>
+      <ul class="points">
+        <li><span><b>Within 2 cents:</b> a rounding line makes it match</span></li>
+        <li><span><b>Beyond that:</b> nothing is sent, and you’re told why</span></li>
+      </ul>
+    </div>
+    <div class="stack" style="gap: 26px;">
+      <div>
+        <div class="tag ok"><i></i> A cent apart — rounded</div>
+        <figure class="frame">
+          <div class="vp" style="height: 407px;"><img class="cp" src="shots/exactly-rounding.png" style="top: -213px;" alt=""></div>
+        </figure>
+      </div>
+      <div>
+        <div class="tag no"><i></i> €4.49 apart — refused</div>
+        <figure class="frame">
+          <div class="vp" style="height: 230px;"><img class="cp" src="shots/exactly-refused.png" style="top: -77px;" alt=""></div>
+        </figure>
+      </div>
+    </div>
+  </div>
+  <div class="footer"><img src="assets/icon.svg" alt=""> <b>Exactly</b> &nbsp;·&nbsp; justinholt.com/plugins/craft-exactly</div>
+</section>
+
+<!-- 5 · Never twice (real CP screenshot) ================================= -->
+<section class="slide" data-n="5">
+  <div class="inner" style="gap: 90px;">
+    <div class="copy" style="width: 820px;">
+      <div class="eyebrow"><span class="rule"></span> One claim, every path</div>
+      <h2>Never invoices<br>an order twice</h2>
+      <p class="lede">A unique index on order, administration and kind — and the button, the queue, a retry and a backfill all go through the same atomic claim.</p>
+      <div class="wire">
+        <div><span class="cmd">push INV-2026-04507</span><br><span class="ok">✓ Sent to Exact Online as Invoice 26042.</span></div>
+        <div><span class="cmd">push INV-2026-04507</span><br><span class="skip">↷ Skipped: This order is already invoice 26042 in Exact Online.</span></div>
+      </div>
+      <ul class="points" style="margin-top: 30px;">
+        <li><span>A second invoice only as a deliberate, confirmed act</span></li>
+      </ul>
+    </div>
+    <div class="stack" style="flex: 0 0 640px;">
+      <figure class="frame">
+        <div class="chrome"><b></b><b></b><b></b><em>Commerce → Order</em></div>
+        <div class="vp" style="height: 545px;"><img src="shots/exactly-panel.png" style="width: 640px; top: 0;" alt=""></div>
+      </figure>
+    </div>
+  </div>
+  <div class="footer"><img src="assets/icon.svg" alt=""> <b>Exactly</b> &nbsp;·&nbsp; justinholt.com/plugins/craft-exactly</div>
+</section>
+
+<!-- 6 · Connection and log (real CP screenshots) ========================== -->
+<section class="slide" data-n="6">
+  <div class="inner">
+    <div class="copy" style="width: 590px;">
+      <div class="eyebrow"><span class="rule"></span> Connection &amp; log</div>
+      <h2>Stays connected.<br>Shows its work.</h2>
+      <p class="lede">Exact’s refresh token is single-use. Exactly refreshes under a lock, so two workers can’t kill the connection.</p>
+      <ul class="points">
+        <li><span><b>60 calls a minute:</b> the queue waits out a 429; checkout never does</span></li>
+        <li><span>Every call logged, secrets redacted</span></li>
+      </ul>
+    </div>
+    <div class="stack" style="gap: 26px;">
+      <figure class="frame">
+        <div class="chrome"><b></b><b></b><b></b><em>Settings → Plugins → Exactly</em></div>
+        <div class="vp" style="height: 318px;"><img class="cp" src="shots/exactly-connection.png" style="top: -24px;" alt=""></div>
+      </figure>
+      <figure class="frame">
+        <div class="chrome"><b></b><b></b><b></b><em>Exactly → Documents → Invoice 26046</em></div>
+        <div class="vp" style="height: 242px;"><img class="cp" src="shots/exactly-retry-log.png" style="top: 0;" alt=""></div>
+      </figure>
+    </div>
+  </div>
+  <div class="footer"><img src="assets/icon.svg" alt=""> <b>Exactly</b> &nbsp;·&nbsp; justinholt.com/plugins/craft-exactly</div>
+</section>
+
+<!-- 7 · The rest of the books (real CP screenshot) ======================== -->
+<section class="slide" data-n="7">
+  <div class="inner">
+    <div class="copy" style="width: 590px;">
+      <div class="eyebrow"><span class="rule"></span> The rest of the books</div>
+      <h2>Credit notes,<br>backfill, retry</h2>
+      <p class="lede">From the screen, or from the console.</p>
+<div class="term"><span class="p">$</span> php craft exactly/sync/preview 1234
+<span class="p">$</span> php craft exactly/sync/backfill \
+    --since=2026-01-01 --dry-run
+<span class="p">$</span> php craft exactly/sync/retry
+<span class="p">$</span> php craft exactly/sync/maintenance <span class="c"># cron</span></div>
+      <ul class="points" style="margin-top: 30px;">
+        <li><span>In Dutch, German, French and Spanish</span></li>
+      </ul>
+    </div>
+    <div class="stack">
+      <figure class="frame">
+        <div class="chrome"><b></b><b></b><b></b><em>Exactly → Documents</em></div>
+        <div class="vp" style="height: 643px;"><img src="shots/exactly-documents.png" style="width: 1020px; top: 0;" alt=""></div>
+      </figure>
+    </div>
+  </div>
+  <div class="footer"><img src="assets/icon.svg" alt=""> <b>Exactly</b> &nbsp;·&nbsp; justinholt.com/plugins/craft-exactly</div>
+</section>
+
+<script>
+  var n = new URLSearchParams(location.search).get('s');
+  if (n) {
+    document.body.classList.add('single');
+    var el = document.querySelector('.slide[data-n="' + n + '"]');
+    if (el) el.classList.add('active');
+  }
+</script>
+</body>
+</html>

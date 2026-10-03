@@ -12,8 +12,11 @@
     {% endif %}
 {% endfor %}
 
-<div class="order-flex" id="exactly-panel" style="flex-direction: column; gap: 8px;">
-    <h3 style="margin-bottom: 0;">{{ 'Exact Online'|t('exactly') }}</h3>
+{# Not Commerce's `.order-flex`: that class spreads its children across the sidebar's full height,
+   which left a line of white space between every row here and pushed the buttons off the edge. #}
+<div id="exactly-panel" style="display: flex; flex-direction: column; gap: 4px;">
+    <style>#exactly-panel p { margin: 0; }</style>
+    <h3 style="margin: 0 0 4px;">{{ 'Exact Online'|t('exactly') }}</h3>
 
     {% if not connected %}
         <p class="light">
@@ -61,7 +64,7 @@
         </p>
     {% endfor %}
 
-    <div class="buttons" style="margin: 0;">
+    <div class="buttons" style="margin: 8px 0 0; flex-wrap: wrap; gap: 6px;">
         <a class="btn" href="{{ url('exactly/documents/preview/' ~ order.id) }}">{{ 'Preview payload'|t('exactly') }}</a>
 
         {% if canPush and connected %}

@@ -34,6 +34,12 @@
         class: 'code'
     }) }}
 
+    {% if not settings.redirectUriIsClean() %}
+        <p class="warning" id="exactly-redirect-warning">
+            {{ 'This redirect URI has a query string in it because `omitScriptNameInUrls` is off. Exact Online can refuse a redirect URI like that, which ends in a redirect_uri mismatch. Turn `omitScriptNameInUrls` on (with URL rewriting set up on the server) so it becomes a plain path, then copy it again.'|t('exactly') }}
+        </p>
+    {% endif %}
+
     <div class="field">
         {% if connected %}
             <span class="status green"></span>
@@ -112,7 +118,10 @@
     id: 'clientSecret',
     name: 'clientSecret',
     value: settings.clientSecret,
-    suggestEnvVars: true
+    suggestEnvVars: true,
+    warning: settings.clientSecret and settings.clientSecret|first != '$'
+        ? 'Saved like this, the secret is written to project config and committed with it. Use an environment variable, such as $EXACT_CLIENT_SECRET.'|t('exactly')
+        : null
 }) }}
 
 {{ forms.textField({
@@ -490,6 +499,18 @@
     }) }}
 {% endfor %}
 
+{% set taxCategoryOptions = plugin.vat.getCommerceTaxCategoryOptions() %}
+{% if taxCategoryOptions|length %}
+    {{ forms.checkboxSelectField({
+        label: 'VAT-exempt tax categories'|t('exactly'),
+        instructions: 'A line in one of these Commerce tax categories that was charged no tax is invoiced with the Exempt code above, whatever the order’s treatment. A line that was charged tax keeps the code for what it was charged.'|t('exactly'),
+        id: 'exemptTaxCategoryIds',
+        name: 'exemptTaxCategoryIds',
+        options: taxCategoryOptions,
+        values: settings.getExemptTaxCategoryIds()|map(id => id ~ '')
+    }) }}
+{% endif %}
+
 {% set taxRates = plugin.vat.getCommerceTaxRates() %}
 {% if taxRates|length %}
     <h3>{{ 'Per Commerce tax rate'|t('exactly') }}</h3>
@@ -610,6 +631,7 @@
 
 {{ forms.textField({
     label: 'Retry delay (minutes)'|t('exactly'),
+    instructions: 'How long a failed push waits before maintenance, `exactly/sync/retry` or Retry failures picks it up again. 0 retries on the next run.'|t('exactly'),
     id: 'retryDelayMinutes',
     name: 'retryDelayMinutes',
     type: 'number',
@@ -619,6 +641,7 @@
 
 {{ forms.lightswitchField({
     label: 'Credit notes on refund'|t('exactly'),
+    instructions: 'When an invoiced order is refunded in full, queue a credit note for it. A partial refund issues nothing — a credit note reverses the whole invoice — and is noted in the log instead.'|t('exactly'),
     id: 'creditNotesOnRefund',
     name: 'creditNotesOnRefund',
     on: settings.creditNotesOnRefund

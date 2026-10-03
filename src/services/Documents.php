@@ -136,16 +136,33 @@ class Documents extends Component
     /**
      * Rows that failed and are still worth another attempt.
      *
+     * "Worth another attempt" means attempts left *and* `retryDelayMinutes` since the last one, so
+     * a cron running maintenance every five minutes does not hammer an Exact outage (or a closed
+     * journal) every five minutes. `0` retries at the next opportunity. Every retry path — the
+     * maintenance cron, `exactly/sync/retry` (with or without `--now`) and the **Retry failures**
+     * button — comes through here; a person who wants one order *now* uses its own Send button.
+     *
      * @return Document[]
      */
     public function getRetryable(int $limit = 50): array
     {
-        $maxAttempts = Plugin::getInstance()->getSettings()->maxAttempts;
+        $settings = Plugin::getInstance()->getSettings();
 
-        $rows = (new Query())
+        $query = (new Query())
             ->from([Table::DOCUMENTS])
             ->where(['status' => Document::STATUS_FAILED])
-            ->andWhere(['<', 'attempts', $maxAttempts])
+            ->andWhere(['<', 'attempts', $settings->maxAttempts]);
+
+        if ($settings->retryDelayMinutes > 0) {
+            $cutoff = (new DateTime())->modify('-' . $settings->retryDelayMinutes . ' minutes');
+            $query->andWhere([
+                'or',
+                ['dateLastAttempt' => null],
+                ['<=', 'dateLastAttempt', Db::prepareDateForDb($cutoff)],
+            ]);
+        }
+
+        $rows = $query
             ->orderBy(['dateLastAttempt' => SORT_ASC])
             ->limit($limit)
             ->all();
@@ -234,12 +251,14 @@ class Documents extends Component
         }
 
         if ($document->isSent() && !$force) {
+            $number = $document->invoiceNumber ?? $document->exactInvoiceId;
+
             return [
                 'document' => $document,
                 'claimed' => false,
-                'reason' => Craft::t('exactly', 'This order is already invoice {number} in Exact Online.', [
-                    'number' => $document->invoiceNumber ?? $document->exactInvoiceId,
-                ]),
+                'reason' => $kind === Document::KIND_CREDIT_NOTE
+                    ? Craft::t('exactly', 'This order already has credit note {number} in Exact Online.', ['number' => $number])
+                    : Craft::t('exactly', 'This order is already invoice {number} in Exact Online.', ['number' => $number]),
             ];
         }
 
@@ -336,29 +355,120 @@ class Documents extends Component
         ]);
     }
 
-    public function markQueued(Document $document): Document
+    /**
+     * Atomically mark a row `queued`, unless it must not be touched.
+     *
+     * Never a `sent` row, and never a `sending` row that is still within the staleness window: a
+     * worker may be waiting on Exact for it right now, and a `queued` row is one a new job may
+     * claim — which would POST a second invoice beside the first. Like `claim()`, the answer is the
+     * affected-row count of one conditional `UPDATE`, so there is no read-then-write gap.
+     *
+     * @param string|null $expectedStatus only transition from exactly this status
+     * @return bool whether the row is now `queued` because of this call. Callers push the job
+     *              only when it is true.
+     */
+    public function markQueued(Document $document, ?string $expectedStatus = null): bool
     {
-        return $this->update($document, ['status' => Document::STATUS_QUEUED]);
-    }
+        if ($document->id === null) {
+            return false;
+        }
 
-    public function markSkipped(Document $document, string $reason): Document
-    {
-        return $this->update($document, [
-            'status' => Document::STATUS_SKIPPED,
-            'lastError' => mb_substr($reason, 0, 2000),
-        ]);
+        $staleCutoff = Db::prepareDateForDb((new DateTime())->modify('-' . self::STALE_ATTEMPT_MINUTES . ' minutes'));
+
+        // A `sending` row is only ever taken over once it has gone stale — the claim() rule.
+        $staleSending = [
+            'and',
+            ['status' => Document::STATUS_SENDING],
+            ['or', ['dateLastAttempt' => null], ['<', 'dateLastAttempt', $staleCutoff]],
+        ];
+
+        $condition = match ($expectedStatus) {
+            null => ['or', ['not in', 'status', [Document::STATUS_SENT, Document::STATUS_SENDING]], $staleSending],
+            Document::STATUS_SENDING => $staleSending,
+            default => ['status' => $expectedStatus],
+        };
+
+        $affected = Craft::$app->getDb()->createCommand()->update(
+            Table::DOCUMENTS,
+            ['status' => Document::STATUS_QUEUED, 'dateUpdated' => Db::prepareDateForDb(new DateTime())],
+            ['and', ['id' => $document->id], $condition],
+        )->execute();
+
+        return $affected > 0;
     }
 
     /**
-     * Release a claim without recording an outcome — used when the push never started because a
-     * precondition failed, so the attempt should not count against the retry budget.
+     * Why a row could not be queued, in the words `claim()` would use.
      */
-    public function release(Document $document, string $status = Document::STATUS_PENDING): Document
+    public function queueRefusal(Document $document): string
     {
-        return $this->update($document, [
+        $fresh = $this->getDocumentById((int)$document->id) ?? $document;
+
+        if ($fresh->isSent()) {
+            $number = $fresh->invoiceNumber ?? $fresh->exactInvoiceId;
+
+            return $fresh->kind === Document::KIND_CREDIT_NOTE
+                ? Craft::t('exactly', 'This order already has credit note {number} in Exact Online.', ['number' => $number])
+                : Craft::t('exactly', 'This order is already invoice {number} in Exact Online.', ['number' => $number]);
+        }
+
+        return Craft::t('exactly', 'Another process is sending this order to Exact Online right now.');
+    }
+
+    /**
+     * @param string|null $expectedStatus only when the row is still in exactly this status (atomic)
+     */
+    public function markSkipped(Document $document, string $reason, ?string $expectedStatus = null): Document
+    {
+        if ($expectedStatus === null) {
+            return $this->update($document, [
+                'status' => Document::STATUS_SKIPPED,
+                'lastError' => mb_substr($reason, 0, 2000),
+            ]);
+        }
+
+        if ($document->id !== null) {
+            Craft::$app->getDb()->createCommand()->update(Table::DOCUMENTS, [
+                'status' => Document::STATUS_SKIPPED,
+                'lastError' => mb_substr($reason, 0, 2000),
+                'dateUpdated' => Db::prepareDateForDb(new DateTime()),
+            ], ['id' => $document->id, 'status' => $expectedStatus])->execute();
+        }
+
+        return $this->getDocumentById((int)$document->id) ?? $document;
+    }
+
+    /**
+     * Release a claim without counting the attempt — used when nothing reached Exact (a
+     * precondition failed, or Exact refused the call on its rate limit), so the attempt should not
+     * count against the retry budget and the row must not sit in `sending` until it goes stale.
+     */
+    public function release(Document $document, string $status = Document::STATUS_PENDING, ?string $reason = null): Document
+    {
+        $values = [
             'status' => $status,
             'attempts' => max(0, $document->attempts - 1),
-        ]);
+        ];
+
+        if ($reason !== null) {
+            $values['lastError'] = mb_substr($reason, 0, 2000);
+        }
+
+        return $this->update($document, $values);
+    }
+
+    /**
+     * Record Exact's current document status (10 draft, 20 open, 50 processed), as re-read by the
+     * payment sync. The value stored at creation is always a draft, so without this a processed
+     * invoice could never be told apart from one nobody has booked.
+     */
+    public function recordExactStatus(Document $document, int $exactStatus): Document
+    {
+        if ($document->exactStatus === $exactStatus) {
+            return $document;
+        }
+
+        return $this->update($document, ['exactStatus' => $exactStatus]);
     }
 
     public function recordPayment(Document $document, ?float $amountPaid, string $status): Document

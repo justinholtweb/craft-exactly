@@ -6,7 +6,10 @@ use craft\commerce\elements\Order;
 use craft\console\Controller;
 use craft\helpers\Console;
 use DateTime;
+use justinholtweb\exactly\errors\RateLimitException;
+use justinholtweb\exactly\models\Document;
 use justinholtweb\exactly\Plugin;
+use justinholtweb\exactly\services\Invoices;
 use yii\console\ExitCode;
 
 /**
@@ -30,22 +33,26 @@ class SyncController extends Controller
     public ?string $since = null;
 
     /**
-     * Send inline rather than through the queue.
+     * Send inline rather than through the queue (`backfill` and `retry`).
      */
     public bool $now = false;
+
+    /**
+     * Each action registers exactly the options it reads, and no others — an option Yii accepts
+     * but the action ignores is worse than an error.
+     */
+    public const ACTION_OPTIONS = [
+        'backfill' => ['dryRun', 'limit', 'since', 'now'],
+        'retry' => ['limit', 'now'],
+        'payments' => ['limit'],
+    ];
 
     /**
      * @inheritdoc
      */
     public function options($actionID): array
     {
-        $options = parent::options($actionID);
-
-        return match ($actionID) {
-            'backfill' => array_merge($options, ['dryRun', 'limit', 'since', 'now']),
-            'pending', 'retry' => array_merge($options, ['limit', 'now']),
-            default => $options,
-        };
+        return array_merge(parent::options($actionID), self::ACTION_OPTIONS[$actionID] ?? []);
     }
 
     /**
@@ -61,7 +68,13 @@ class SyncController extends Controller
             return ExitCode::DATAERR;
         }
 
-        $result = Plugin::getInstance()->getInvoices()->push($order);
+        try {
+            $result = Plugin::getInstance()->getInvoices()->push($order);
+        } catch (RateLimitException $e) {
+            $this->stderr(Invoices::rateLimitMessage($e) . "\n", Console::FG_YELLOW);
+
+            return ExitCode::TEMPFAIL;
+        }
 
         foreach ($result['warnings'] as $warning) {
             $this->stdout("  ! $warning\n", Console::FG_YELLOW);
@@ -134,24 +147,10 @@ class SyncController extends Controller
         $plugin = Plugin::getInstance();
 
         if ($this->now) {
-            $orders = $plugin->getSync()->getUninvoicedOrders($since, $this->limit);
-            $sent = 0;
-            $failed = 0;
-
-            foreach ($orders as $order) {
-                if ($this->dryRun) {
-                    $this->stdout("  would send order {$order->id} ({$order->reference})\n");
-                    continue;
-                }
-
-                $result = $plugin->getInvoices()->push($order);
-                $this->stdout(sprintf("  %s %s\n", $result['success'] ? '✓' : '✗', $result['message']));
-                $result['success'] ? $sent++ : $failed++;
-            }
-
-            $this->stdout("\n$sent sent, $failed failed.\n", $failed ? Console::FG_YELLOW : Console::FG_GREEN);
-
-            return $failed ? ExitCode::UNSPECIFIED_ERROR : ExitCode::OK;
+            return $this->pushInline(array_map(
+                static fn(Order $order) => ['order' => $order, 'kind' => Document::KIND_INVOICE],
+                $plugin->getSync()->getUninvoicedOrders($since, $this->limit),
+            ));
         }
 
         $result = $plugin->getSync()->backfill($since, $this->limit, $this->dryRun);
@@ -171,7 +170,26 @@ class SyncController extends Controller
      */
     public function actionRetry(): int
     {
-        $result = Plugin::getInstance()->getSync()->retryFailed($this->limit);
+        $plugin = Plugin::getInstance();
+
+        if ($this->now) {
+            $orders = [];
+
+            foreach ($plugin->getDocuments()->getRetryable($this->limit) as $document) {
+                $order = $document->getOrder();
+
+                if ($order instanceof Order) {
+                    // The row's own kind: a failed credit note is retried as a credit note.
+                    $orders[] = ['order' => $order, 'kind' => $document->kind];
+                } else {
+                    $plugin->getDocuments()->markSkipped($document, \Craft::t('exactly', 'The order no longer exists.'));
+                }
+            }
+
+            return $this->pushInline($orders);
+        }
+
+        $result = $plugin->getSync()->retryFailed($this->limit);
 
         $this->stdout("Re-queued {$result['queued']} documents.\n", Console::FG_GREEN);
 
@@ -214,6 +232,47 @@ class SyncController extends Controller
         ), Console::FG_GREEN);
 
         return ExitCode::OK;
+    }
+
+    /**
+     * Push orders one after another in this process (`--now`), stopping at a rate limit: every
+     * order after it would be refused too, and each refusal is a call out of the same budget.
+     *
+     * @param array<int, array{order: Order, kind: string}> $orders
+     */
+    private function pushInline(array $orders): int
+    {
+        $plugin = Plugin::getInstance();
+        $sent = 0;
+        $failed = 0;
+
+        foreach ($orders as ['order' => $order, 'kind' => $kind]) {
+            if ($this->dryRun) {
+                $this->stdout("  would send order {$order->id} ({$order->reference})\n");
+                continue;
+            }
+
+            try {
+                $result = $plugin->getInvoices()->push($order, ['kind' => $kind]);
+            } catch (RateLimitException $e) {
+                $this->stderr('  ! ' . Invoices::rateLimitMessage($e) . "\n", Console::FG_YELLOW);
+                $this->stdout("\n$sent sent, $failed failed; stopped at the rate limit.\n", Console::FG_YELLOW);
+
+                return ExitCode::TEMPFAIL;
+            }
+
+            if ($result['skipped']) {
+                $this->stdout('  - ' . $result['message'] . "\n");
+                continue;
+            }
+
+            $this->stdout(sprintf("  %s %s\n", $result['success'] ? '✓' : '✗', $result['message']));
+            $result['success'] ? $sent++ : $failed++;
+        }
+
+        $this->stdout("\n$sent sent, $failed failed.\n", $failed ? Console::FG_YELLOW : Console::FG_GREEN);
+
+        return $failed ? ExitCode::UNSPECIFIED_ERROR : ExitCode::OK;
     }
 
     /**

@@ -6,11 +6,15 @@ use Craft;
 use craft\base\Component;
 use craft\commerce\db\Table as CommerceTable;
 use craft\commerce\elements\Order;
+use craft\commerce\models\Transaction;
+use craft\commerce\Plugin as Commerce;
+use craft\commerce\records\Transaction as TransactionRecord;
 use craft\db\Query;
 use craft\db\Table as CraftTable;
 use craft\helpers\Db;
 use DateTime;
 use justinholtweb\exactly\db\Table;
+use justinholtweb\exactly\errors\RateLimitException;
 use justinholtweb\exactly\jobs\PushOrder;
 use justinholtweb\exactly\models\Document;
 use justinholtweb\exactly\models\LogEntry;
@@ -81,7 +85,7 @@ class Sync extends Component
 
     private function matchesStatus(Order $order): bool
     {
-        $handles = Plugin::getInstance()->getSettings()->triggerStatusHandles;
+        $handles = array_filter((array)Plugin::getInstance()->getSettings()->triggerStatusHandles);
 
         if (!$handles) {
             return false;
@@ -120,17 +124,149 @@ class Sync extends Component
     }
 
     /**
+     * Queue a credit note for a refunded order, when `creditNotesOnRefund` is on.
+     *
+     * Called for every transaction Commerce saves (see `Plugin::_registerAutomaticTriggers()`),
+     * so it must never throw: a refund that has already
+     * gone through at the gateway cannot be un-done because Exact is down, and the merchant must
+     * not see an error for it. It only ever *queues* — even with the queue switched off — because
+     * the refund screen is not the place to wait on Exact.
+     *
+     * **Only a full refund issues a credit note.** Exactly's credit note reverses the whole
+     * invoice, so issuing one for a partial refund would credit money the customer still paid.
+     * A partial refund is logged with the amounts and left to the bookkeeper; once later refunds
+     * bring the total refunded up to the order total, that refund issues the credit note.
+     *
+     * Retries and duplicate events cannot double-issue: the job goes through `Documents::claim()`
+     * with kind `credit-note`, and the unique index allows one per order per administration.
+     *
+     * @return string|null why nothing was queued, or null when a credit note was queued
+     */
+    public function handleRefund(Transaction $refund): ?string
+    {
+        $plugin = Plugin::getInstance();
+
+        try {
+            if (!$plugin->getSettings()->creditNotesOnRefund) {
+                return 'off';
+            }
+
+            if ($refund->type !== TransactionRecord::TYPE_REFUND || $refund->status !== TransactionRecord::STATUS_SUCCESS) {
+                return 'not a successful refund';
+            }
+
+            $order = $refund->getOrder();
+            $division = $plugin->getOauth()->getDivision();
+
+            if (!$order instanceof Order || $division === null || $division <= 0) {
+                return 'no order or division';
+            }
+
+            $invoice = $plugin->getDocuments()->getDocument((int)$order->id, $division, Document::KIND_INVOICE);
+
+            if ($invoice === null || !$invoice->isSent()) {
+                return 'not invoiced';
+            }
+
+            $credit = $plugin->getDocuments()->getDocument((int)$order->id, $division, Document::KIND_CREDIT_NOTE);
+
+            if ($credit !== null && $credit->isSent()) {
+                return 'already credited';
+            }
+
+            $refunded = $this->getRefundedTotal($order, $refund);
+            $total = round((float)$order->getTotalPrice(), 2);
+
+            // The same tolerance reconciliation allows: a multi-currency refund converted back can
+            // land a cent short of the total and is still a full refund.
+            $tolerance = max(0.005, (float)$plugin->getSettings()->roundingTolerance);
+
+            if ($refunded < $total - $tolerance) {
+                $plugin->getLog()->write('sync.refund', [
+                    'level' => LogEntry::LEVEL_WARNING,
+                    'orderId' => $order->id,
+                    'division' => $division,
+                    'summary' => mb_substr(Craft::t('exactly', 'Order {number} was partly refunded ({refunded} of {total}), so no credit note was issued. Exactly’s credit notes reverse the whole invoice; book a partial credit in Exact Online by hand.', [
+                        'number' => $plugin->getDocuments()->orderNumber($order),
+                        'refunded' => number_format($refunded, 2),
+                        'total' => number_format($total, 2),
+                    ]), 0, 255),
+                ]);
+
+                return 'partial';
+            }
+
+            // Atomic, and no job when it fails: a credit note mid-send must not get a sibling.
+            if ($credit !== null && !$plugin->getDocuments()->markQueued($credit)) {
+                return $credit->isSent() ? 'already credited' : 'in flight';
+            }
+
+            Craft::$app->getQueue()->push(new PushOrder([
+                'orderId' => (int)$order->id,
+                'orderNumber' => $plugin->getDocuments()->orderNumber($order),
+                'kind' => Document::KIND_CREDIT_NOTE,
+            ]));
+
+            return null;
+        } catch (\Throwable $e) {
+            Craft::warning('Exactly could not queue a credit note for refund ' . $refund->id . ': ' . $e->getMessage(), __METHOD__);
+
+            try {
+                $plugin->getLog()->write('sync.refund', [
+                    'level' => LogEntry::LEVEL_ERROR,
+                    'orderId' => $refund->orderId,
+                    'summary' => Craft::t('exactly', 'Could not queue a credit note for the refund'),
+                    'message' => $e->getMessage(),
+                ]);
+            } catch (\Throwable) {
+            }
+
+            return 'error';
+        }
+    }
+
+    /**
+     * Everything refunded on an order so far, in the order's currency, counting this refund even
+     * if Commerce has not handed it back from the database yet.
+     */
+    private function getRefundedTotal(Order $order, Transaction $refund): float
+    {
+        $total = 0.0;
+        $seen = false;
+
+        foreach (Commerce::getInstance()->getTransactions()->getAllTransactionsByOrderId((int)$order->id) as $transaction) {
+            if ($transaction->type !== TransactionRecord::TYPE_REFUND || $transaction->status !== TransactionRecord::STATUS_SUCCESS) {
+                continue;
+            }
+
+            $total += (float)$transaction->amount;
+            $seen = $seen || ($refund->id !== null && (int)$transaction->id === (int)$refund->id);
+        }
+
+        if (!$seen) {
+            $total += (float)$refund->amount;
+        }
+
+        return round($total, 2);
+    }
+
+    /**
      * Put an order on the queue (or push it inline, if the merchant switched the queue off).
      *
      * @return array{queued: bool, message: string}
      */
-    public function schedule(Order $order, int $delaySeconds = 0): array
+    public function schedule(Order $order, int $delaySeconds = 0, string $kind = Document::KIND_INVOICE): array
     {
         $plugin = Plugin::getInstance();
         $settings = $plugin->getSettings();
 
         if (!$settings->useQueue) {
-            $result = $plugin->getInvoices()->push($order);
+            try {
+                $result = $plugin->getInvoices()->push($order, ['kind' => $kind]);
+            } catch (RateLimitException $e) {
+                // The row is `failed` with the attempt uncounted, so the next retry picks it up.
+                return ['queued' => false, 'message' => Invoices::rateLimitMessage($e)];
+            }
 
             return ['queued' => false, 'message' => $result['message']];
         }
@@ -138,16 +274,20 @@ class Sync extends Component
         $division = $plugin->getOauth()->getDivision();
 
         if ($division !== null) {
-            $document = $plugin->getDocuments()->getDocument((int)$order->id, $division);
+            $document = $plugin->getDocuments()->getDocument((int)$order->id, $division, $kind);
 
-            if ($document !== null) {
-                $plugin->getDocuments()->markQueued($document);
+            // Atomic: a sent row, or one a worker is sending right now, is left alone and no job
+            // is pushed — a queued row is one a new job may claim, and that would be a second
+            // invoice beside the one in flight.
+            if ($document !== null && !$plugin->getDocuments()->markQueued($document)) {
+                return ['queued' => false, 'message' => $plugin->getDocuments()->queueRefusal($document)];
             }
         }
 
         Craft::$app->getQueue()->delay($delaySeconds)->push(new PushOrder([
             'orderId' => (int)$order->id,
             'orderNumber' => $plugin->getDocuments()->orderNumber($order),
+            'kind' => $kind,
         ]));
 
         return [
@@ -269,7 +409,8 @@ class Sync extends Component
                 continue;
             }
 
-            $this->schedule($order, $index * 5);
+            // The row's own kind: a failed credit note is retried as a credit note.
+            $this->schedule($order, $index * 5, $document->kind);
             $queued++;
         }
 
@@ -298,10 +439,18 @@ class Sync extends Component
             ];
         }
 
-        $result = $plugin->getInvoices()->push($order, [
-            'kind' => Document::KIND_CREDIT_NOTE,
-            'force' => $force,
-        ]);
+        try {
+            $result = $plugin->getInvoices()->push($order, [
+                'kind' => Document::KIND_CREDIT_NOTE,
+                'force' => $force,
+            ]);
+        } catch (RateLimitException $e) {
+            return [
+                'success' => false,
+                'message' => Invoices::rateLimitMessage($e),
+                'document' => null,
+            ];
+        }
 
         return [
             'success' => $result['success'],

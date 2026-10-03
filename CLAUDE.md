@@ -52,9 +52,12 @@ no feature gating anywhere in the code.
   treats the duplicate-key failure as the expected branch; taking over an existing row is an
   `UPDATE … WHERE status = <what was read>` whose affected-row count is the answer. A `sending` row
   is respected for 15 minutes so a killed worker cannot wedge an order forever.
+  `markQueued()` follows the same rule atomically (never `sent`, never a fresh `sending`) and its
+  callers push a job only when it returns true — a `queued` row is one a new job may claim.
 - **Money is verified, not assumed.** Exact computes VAT from the line codes, so `buildPayload()`
   predicts that total from the mapped codes' percentages and compares it against
-  `Order::getTotalPrice()`. Cents get a rounding line; a real gap refuses to send.
+  `Order::getTotalPrice()`. Cents get a rounding line; a real gap refuses to send — and the refusal comes *before* the
+  account and items are resolved, because resolving them can create them in Exact.
 
 ### Protocol notes (read, not guessed)
 
@@ -124,7 +127,8 @@ docker exec -w /var/www/html ddev-plugin-testing-web bash -lc \
   'find /var/www/craft-exactly/src -name "*.php" -print0 | xargs -0 -n1 php -l'
 ```
 
-**158 checks, 0 failures.** Self-cleaning, and it needs **no Exact Online account**: `FakeApi`
+**225 checks, 0 failures.** Self-cleaning (and scoped: cleanup deletes only the fixture division's
+cache rows and log rows this run wrote, never a whole table), and it needs **no Exact Online account**: `FakeApi`
 replaces only `services\Api`, so the account resolver, the item resolver, the VAT determination, the
 payload builder, the ledger and the reconciliation arithmetic are all the real code running against a
 fixture Exact. Stubbing `Invoices` instead would test nothing that matters.
@@ -133,8 +137,15 @@ Settings and editions are changed **in memory** (`Plugin::setSettings()`, `$plug
 Project config is contended in that shared harness and a long console script that writes it gets
 `StaleResourceException` from something else's queue runner.
 
+Anything that queues a job runs under `withFakeQueue()`: the harness's real queue is drained by a
+shared runner, which would execute the job in another process against the real `services\Api`.
+
 **Harness notes, none of them this plugin's fault:**
 
+- `craft-twinsies` also listens to Commerce's after-refund event and queues its own job, so refund
+  checks count only Exactly's `PushOrder` jobs.
+- The shared queue runner drains jobs mid-run, so a queue-count check can only assert "nothing was
+  added" (`<=`), never equality.
 - `craft-penny` types its `Elements::EVENT_BEFORE_SAVE_ELEMENT` handler as `ModelEvent` while Craft
   passes an `ElementEvent`, so every element save fatals while it is enabled. `checks.php` detaches
   that handler in-process.

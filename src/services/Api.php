@@ -289,11 +289,24 @@ class Api extends Component
      * Turn `salesinvoice/SalesInvoices` into a full URL for the current division.
      *
      * An absolute URL is passed through untouched — that is what `__next` hands back, and
-     * rewriting it would drop the continuation token.
+     * rewriting it would drop the continuation token. But only on Exact's own host: the bearer
+     * token goes wherever this URL points, and `__next` is read from a response body.
+     *
+     * @throws ApiException
      */
     public function buildUrl(string $endpoint, array $params = []): string
     {
         if (str_starts_with($endpoint, 'http://') || str_starts_with($endpoint, 'https://')) {
+            $base = parse_url(Plugin::getInstance()->getSettings()->getBaseUrl());
+            $next = parse_url($endpoint);
+
+            if (
+                ($next['scheme'] ?? '') !== 'https'
+                || strtolower($next['host'] ?? '') !== strtolower($base['host'] ?? '')
+            ) {
+                throw new ApiException(Craft::t('exactly', 'Exact Online returned a link to another host; it was not followed.'));
+            }
+
             return $this->applyParams($endpoint, $params);
         }
 
@@ -376,9 +389,14 @@ class Api extends Component
             return;
         }
 
-        if ($connection->dailyRemaining !== null && $connection->dailyRemaining <= 0) {
+        // Blocks only until the stored reset time. A spent daily budget with no reset time, or
+        // one whose reset has passed, lets the call through — the response is the only thing that
+        // can refresh the count, so blocking on the count alone would block for ever.
+        $dailyWait = $connection->getSecondsUntilDailyReset();
+
+        if ($dailyWait > 0) {
             throw (new RateLimitException(Craft::t('exactly', 'The Exact Online daily call limit for this administration is spent. It resets at midnight in Exact’s time zone.'), 429))
-                ->setRetryAfter(3600);
+                ->setRetryAfter($dailyWait);
         }
 
         $wait = $connection->getSecondsUntilRateLimitReset();
@@ -402,6 +420,8 @@ class Api extends Component
         $limits = [
             'dailyLimit' => $this->intHeader($response, 'X-RateLimit-Limit'),
             'dailyRemaining' => $this->intHeader($response, 'X-RateLimit-Remaining'),
+            // Epoch milliseconds, like the minutely one.
+            'dailyReset' => $this->intHeader($response, 'X-RateLimit-Reset'),
             'minutelyLimit' => $this->intHeader($response, 'X-RateLimit-Minutely-Limit'),
             'minutelyRemaining' => $this->intHeader($response, 'X-RateLimit-Minutely-Remaining'),
             // Epoch milliseconds, not seconds.
@@ -432,6 +452,12 @@ class Api extends Component
 
         if ($retryAfter !== '' && ctype_digit($retryAfter)) {
             return (int)$retryAfter;
+        }
+
+        // A spent *daily* budget waits for the daily reset, not the minutely one — otherwise the
+        // queue comes back every minute to be refused again.
+        if ($response->getHeaderLine('X-RateLimit-Remaining') === '0' && $response->getHeaderLine('X-RateLimit-Reset') !== '') {
+            return max(1, (int)ceil((int)$response->getHeaderLine('X-RateLimit-Reset') / 1000) - time() + 1);
         }
 
         $reset = $response->getHeaderLine('X-RateLimit-Minutely-Reset');

@@ -6,6 +6,7 @@ use Craft;
 use craft\commerce\elements\Order;
 use craft\queue\BaseJob;
 use justinholtweb\exactly\errors\RateLimitException;
+use justinholtweb\exactly\models\Document;
 use justinholtweb\exactly\Plugin;
 
 /**
@@ -33,6 +34,12 @@ class PushOrder extends BaseJob
     public bool $mayRequeue = true;
 
     /**
+     * `invoice`, or `credit-note` for the credit note queued when an order is refunded. Either
+     * way it lands in `Documents::claim()`, so a retried or duplicated job cannot issue twice.
+     */
+    public string $kind = Document::KIND_INVOICE;
+
+    /**
      * @inheritdoc
      */
     public function execute($queue): void
@@ -48,9 +55,36 @@ class PushOrder extends BaseJob
 
         $this->setProgress($queue, 0.1, Craft::t('exactly', 'Building the invoice'));
 
+        if ($this->kind === Document::KIND_CREDIT_NOTE) {
+            $division = $plugin->getOauth()->getDivision();
+            $invoice = $division !== null ? $plugin->getDocuments()->getDocument($this->orderId, $division) : null;
+
+            // The invoice could have been un-tracked between queueing and running. A credit note
+            // against nothing is not something to retry — but a credit row this job's queueing
+            // left `queued` must not stay that way for ever (no retry path takes `queued`), so it
+            // is closed as `skipped`, with the reason, where the Documents screen shows it.
+            if ($invoice === null || !$invoice->isSent()) {
+                $credit = $division !== null
+                    ? $plugin->getDocuments()->getDocument($this->orderId, $division, Document::KIND_CREDIT_NOTE)
+                    : null;
+
+                if ($credit !== null) {
+                    $plugin->getDocuments()->markSkipped(
+                        $credit,
+                        Craft::t('exactly', 'There is no Exact Online invoice to credit for this order.'),
+                        Document::STATUS_QUEUED,
+                    );
+                }
+
+                return;
+            }
+        }
+
         try {
-            $result = $plugin->getInvoices()->push($order);
+            $result = $plugin->getInvoices()->push($order, ['kind' => $this->kind]);
         } catch (RateLimitException $e) {
+            // `push()` has already released the claim (as `failed`, attempt not counted), so the
+            // row is never left in `sending`; a re-queued copy marks it `queued` again.
             $this->requeue($e->retryAfter);
 
             return;
@@ -73,10 +107,24 @@ class PushOrder extends BaseJob
             return;
         }
 
+        // `push()` left the row `failed`. Only that row, still `failed`, is moved to `queued` — and
+        // the copy is pushed only if the move happened. Anything else means another process has
+        // it (sending, sent, or already queued with its own job), and a second job would only
+        // race it. Without a re-queue the row stays `failed`, which `exactly/sync/retry` and the
+        // maintenance cron pick up — so even the second rate limit in a row loses nothing.
+        $plugin = Plugin::getInstance();
+        $division = $plugin->getOauth()->getDivision();
+        $document = $division !== null ? $plugin->getDocuments()->getDocument($this->orderId, $division, $this->kind) : null;
+
+        if ($document !== null && !$plugin->getDocuments()->markQueued($document, Document::STATUS_FAILED)) {
+            return;
+        }
+
         Craft::$app->getQueue()->delay(max(5, $delaySeconds))->push(new self([
             'orderId' => $this->orderId,
             'orderNumber' => $this->orderNumber,
             'mayRequeue' => false,
+            'kind' => $this->kind,
         ]));
     }
 
@@ -85,6 +133,12 @@ class PushOrder extends BaseJob
      */
     protected function defaultDescription(): ?string
     {
+        if ($this->kind === Document::KIND_CREDIT_NOTE) {
+            return Craft::t('exactly', 'Sending a credit note for order {number} to Exact Online', [
+                'number' => $this->orderNumber ?? $this->orderId,
+            ]);
+        }
+
         return Craft::t('exactly', 'Sending order {number} to Exact Online', [
             'number' => $this->orderNumber ?? $this->orderId,
         ]);

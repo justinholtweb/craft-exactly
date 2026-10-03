@@ -6,8 +6,10 @@ use Craft;
 use craft\commerce\elements\Order;
 use craft\web\Controller;
 use DateTime;
+use justinholtweb\exactly\errors\RateLimitException;
 use justinholtweb\exactly\models\Document;
 use justinholtweb\exactly\Plugin;
+use justinholtweb\exactly\services\Invoices;
 use yii\web\NotFoundHttpException;
 use yii\web\Response;
 
@@ -27,6 +29,9 @@ class DocumentsController extends Controller
 
         $this->requireCpRequest();
         $this->requirePermission('exactly-viewDocuments');
+        // Every screen here shows or acts on orders by ID, so it is no wider than Commerce's own
+        // order access — Exactly's permissions add to that, they do not stand in for it.
+        $this->requirePermission('commerce-manageOrders');
 
         return true;
     }
@@ -120,7 +125,16 @@ class DocumentsController extends Controller
             return $this->asFailure(Craft::t('exactly', 'That order no longer exists.'));
         }
 
-        $result = Plugin::getInstance()->getInvoices()->push($order, ['force' => $force]);
+        try {
+            $result = Plugin::getInstance()->getInvoices()->push($order, ['force' => $force]);
+        } catch (RateLimitException $e) {
+            return $this->asJson([
+                'success' => false,
+                'message' => Invoices::rateLimitMessage($e),
+                'skipped' => false,
+                'retryAfter' => $e->retryAfter,
+            ]);
+        }
 
         if (!$result['success']) {
             return $this->asJson([

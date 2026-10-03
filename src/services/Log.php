@@ -213,6 +213,6 @@ class Log extends Component
             return $payload;
         }
 
-        return substr($payload, 0, self::MAX_PAYLOAD) . "\n…[truncated]";
+        return mb_strcut($payload, 0, self::MAX_PAYLOAD) . "\n…[truncated]";
     }
 }

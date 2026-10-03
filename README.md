@@ -73,15 +73,16 @@ approximation. Nothing is created in Exact by looking.
    on the Exact app — character for character.
 3. Paste the app's client ID and secret in, and save.
 4. Click **Connect to Exact Online** and authorise.
-5. Pick your administration, sales journal and fallback item, and map a VAT code to each treatment.
+5. Enter your administration's code in **Division** (**List administrations** shows them), set the
+   sales journal and fallback item, and map a VAT code to each treatment.
 
 ### The fallback item
 
 Exact requires an item on every sales invoice line — there is no description-only line. Most stores
 put everything on one generic item (`WEBSHOP`, say) and carry the product name in the line
 description: a Commerce catalogue of four thousand variants does not belong in an accounting
-package's stock list. Exactly can also match on SKU, and create missing items, if you want the
-catalogue mirrored.
+package's stock list. By default Exactly matches the SKU to an Exact item code first and falls
+back to the generic item; it can also create missing items, if you want the catalogue mirrored.
 
 ---
 
@@ -143,7 +144,7 @@ php craft exactly/sync/preview 1234           # the payload for one order, sends
 php craft exactly/sync/order 1234             # send one order
 php craft exactly/sync/backfill --since=2026-01-01 --limit=250 --dry-run
 php craft exactly/sync/retry
-php craft exactly/sync/payments               # reconcile against Exact's open items (Pro)
+php craft exactly/sync/payments               # reconcile against Exact's open items
 php craft exactly/sync/maintenance            # prune, retry and reconcile — for cron
 
 php craft exactly/log/tail 25
@@ -162,13 +163,13 @@ outright, so Exactly refreshes under a mutex and re-reads the stored token insid
 refresh token also expires **30 days after its last use** — a shop that goes quiet for a month has
 to reconnect, and the settings screen warns before that happens.
 
-**Exact allows about 60 calls a minute per administration.** A backfill is staggered, the queue waits
-rather than burning a retry, and a rate limit inside a web request is refused rather than slept
-through — nothing here is allowed to hold up a checkout.
+**Exact allows about 60 calls a minute per administration.** A backfill is staggered, a console
+queue worker waits for the minute to reset, and a rate limit inside a web request is refused rather
+than slept through — nothing here is allowed to hold up a checkout. Run the queue from the console.
 
 **A new sales invoice is a draft.** A draft is not in the general ledger and is not receivable, so
-syncing a year of orders with delivery switched off leaves the revenue report empty. Exactly records
-Exact's status and says so; set a delivery method, or process them in Exact.
+syncing a year of orders with delivery switched off leaves the revenue report empty. Exactly warns
+when it creates one; set a delivery method, or process them in Exact.
 
 **Nothing Exactly does can stop a customer paying.** The automatic triggers queue rather than push,
 and a failure to email a PDF never makes a written invoice look unwritten.

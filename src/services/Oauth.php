@@ -302,6 +302,7 @@ class Oauth extends Component
 
         $connection->dailyLimit = $limits['dailyLimit'] ?? $connection->dailyLimit;
         $connection->dailyRemaining = $limits['dailyRemaining'] ?? $connection->dailyRemaining;
+        $connection->dailyReset = $limits['dailyReset'] ?? $connection->dailyReset;
         $connection->minutelyLimit = $limits['minutelyLimit'] ?? $connection->minutelyLimit;
         $connection->minutelyRemaining = $limits['minutelyRemaining'] ?? $connection->minutelyRemaining;
         $connection->minutelyReset = $limits['minutelyReset'] ?? $connection->minutelyReset;
@@ -313,6 +314,7 @@ class Oauth extends Component
             Craft::$app->getDb()->createCommand()->update(Table::CONNECTIONS, [
                 'dailyLimit' => $connection->dailyLimit,
                 'dailyRemaining' => $connection->dailyRemaining,
+                'dailyReset' => $connection->dailyReset,
                 'minutelyLimit' => $connection->minutelyLimit,
                 'minutelyRemaining' => $connection->minutelyRemaining,
                 'minutelyReset' => $connection->minutelyReset,
@@ -353,7 +355,7 @@ class Oauth extends Component
     /**
      * @throws Exception
      */
-    private function requestToken(array $params, string $action): array
+    private function requestToken(#[\SensitiveParameter] array $params, string $action): array
     {
         $settings = Plugin::getInstance()->getSettings();
 

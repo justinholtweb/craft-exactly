@@ -28,6 +28,7 @@ use craft\commerce\elements\Product;
 use craft\commerce\elements\Variant;
 use craft\commerce\models\OrderAdjustment;
 use craft\commerce\Plugin as Commerce;
+use craft\elements\User;
 use craft\helpers\Db;
 use craft\helpers\StringHelper;
 use justinholtweb\exactly\db\Table;
@@ -76,8 +77,13 @@ $suffix = substr(md5((string)microtime(true)), 0, 6);
 
 $createdProducts = [];
 $createdOrders = [];
+$createdUsers = [];
 $originalSettings = $plugin->getSettings()->toArray();
 const TEST_DIVISION = 987654;
+
+// The harness is shared, so cleanup only ever deletes what this run wrote: cache rows in the
+// fixture division, and log rows newer than this snapshot.
+$logIdAtStart = (int)(new craft\db\Query())->from([Table::LOG])->max('id');
 
 /**
  * A fake Exact Online.
@@ -101,6 +107,17 @@ class FakeApi extends Api
     public int $nextInvoiceNumber = 20001;
     public array $printResult = [];
 
+    /**
+     * InvoiceID => Exact `Status`. Like the real thing, an invoice is created as a draft (10) and
+     * printing/sending it is what processes it (50); a check can also set one directly, as a
+     * bookkeeper processing it in Exact would.
+     */
+    public array $invoiceStatuses = [];
+
+    /** Throw on the Nth status read (1-based) since the last reset; 0 never. */
+    public int $failNthStatusRead = 0;
+    public int $statusReads = 0;
+
     public function get(string $endpoint, array $params = [], array $context = []): mixed
     {
         $this->calls[] = ['method' => 'GET', 'endpoint' => $endpoint, 'body' => null];
@@ -121,8 +138,26 @@ class FakeApi extends Api
 
     public function getAll(string $endpoint, array $params = [], int $maxPages = 20, array $context = []): array
     {
-        $this->calls[] = ['method' => 'GET*', 'endpoint' => $endpoint, 'body' => null];
+        $this->calls[] = ['method' => 'GET*', 'endpoint' => $endpoint, 'body' => null, 'params' => $params];
         $this->maybeFail($endpoint);
+
+        if ($endpoint === 'salesinvoice/SalesInvoices') {
+            if (++$this->statusReads === $this->failNthStatusRead) {
+                throw new ApiException('Service unavailable', 503);
+            }
+
+            // Answers an `InvoiceID eq guid'…' or …` filter from the status table.
+            preg_match_all("~InvoiceID eq guid'([0-9a-f-]+)'~i", (string)($params['filter'] ?? ''), $matches);
+            $rows = [];
+
+            foreach ($matches[1] as $id) {
+                if (isset($this->invoiceStatuses[$id])) {
+                    $rows[] = ['InvoiceID' => $id, 'Status' => $this->invoiceStatuses[$id]];
+                }
+            }
+
+            return $rows;
+        }
 
         return match ($endpoint) {
             'vat/VATCodes' => $this->vatCodes,
@@ -190,8 +225,13 @@ class FakeApi extends Api
                 $exVat += (float)($line['AmountFC'] ?? 0);
             }
 
+            $invoiceId = '11111111-2222-3333-4444-' . str_pad((string)$this->nextInvoiceNumber, 12, '0', STR_PAD_LEFT);
+            $this->invoiceStatuses[$invoiceId] = 10;
+
             return array_merge($body, [
-                'InvoiceID' => '11111111-2222-3333-4444-' . str_pad((string)$this->nextInvoiceNumber, 12, '0', STR_PAD_LEFT),
+                'InvoiceID' => $invoiceId,
+                // Created through the API, an invoice is a draft.
+                'Status' => 10,
                 'EntryID' => '99999999-2222-3333-4444-555555555555',
                 'InvoiceNumber' => $this->nextInvoiceNumber++,
                 'EntryNumber' => 5001,
@@ -202,6 +242,10 @@ class FakeApi extends Api
         }
 
         if ($endpoint === 'salesinvoice/PrintedSalesInvoices') {
+            if (isset($body['InvoiceID'], $this->invoiceStatuses[$body['InvoiceID']])) {
+                $this->invoiceStatuses[$body['InvoiceID']] = 50;
+            }
+
             return $this->printResult;
         }
 
@@ -239,6 +283,8 @@ class FakeApi extends Api
     {
         $this->calls = [];
         $this->failures = [];
+        $this->statusReads = 0;
+        $this->failNthStatusRead = 0;
     }
 
     /** The body of the last POST to an endpoint, or null. */
@@ -268,6 +314,46 @@ class FakeApi extends Api
                 throw $exception;
             }
         }
+    }
+}
+
+/**
+ * A queue that records what is pushed to it and runs nothing.
+ *
+ * The harness's real queue is drained by a shared runner, so a job pushed there would run in
+ * another process against the real `services\Api` — not this fixture Exact.
+ */
+class FakeQueue extends yii\queue\Queue
+{
+    /** @var array<int, array{job: mixed, delay: int}> */
+    public array $pushed = [];
+
+    protected function pushMessage($message, $ttr, $delay, $priority)
+    {
+        $this->pushed[] = ['job' => $this->serializer->unserialize($message), 'delay' => (int)$delay];
+
+        return (string)count($this->pushed);
+    }
+
+    public function status($id)
+    {
+        return self::STATUS_WAITING;
+    }
+}
+
+/**
+ * Run something with Craft's queue swapped for a `FakeQueue`, and put the real one back.
+ */
+function withFakeQueue(callable $fn): mixed
+{
+    $original = Craft::$app->getQueue();
+    $fake = new FakeQueue();
+    Craft::$app->set('queue', $fake);
+
+    try {
+        return $fn($fake);
+    } finally {
+        Craft::$app->set('queue', $original);
     }
 }
 
@@ -696,6 +782,57 @@ try {
         return $probe->hasErrors('customBaseUrl');
     });
 
+    check('a custom base URL off Exact’s own domains is rejected — it is where the token goes', function() {
+        $probe = new justinholtweb\exactly\models\Settings(['customBaseUrl' => 'https://exact.attacker.example']);
+        $probe->validate();
+
+        return $probe->hasErrors('customBaseUrl');
+    });
+
+    check('a custom base URL from an environment variable is checked at runtime, not trusted', function() {
+        // Validation never sees the value an env var resolves to, so `getBaseUrl()` checks again.
+        $_SERVER['EXACTLY_TEST_BASE_URL'] = 'https://exact.attacker.example';
+        putenv('EXACTLY_TEST_BASE_URL=https://exact.attacker.example');
+
+        try {
+            $probe = new justinholtweb\exactly\models\Settings(['region' => 'de', 'customBaseUrl' => '$EXACTLY_TEST_BASE_URL']);
+
+            return $probe->getBaseUrl() === 'https://start.exactonline.de' ?: 'got ' . $probe->getBaseUrl();
+        } finally {
+            unset($_SERVER['EXACTLY_TEST_BASE_URL']);
+            putenv('EXACTLY_TEST_BASE_URL');
+        }
+    });
+
+    check('every Exact region passes the host check', function() {
+        foreach (justinholtweb\exactly\models\Settings::REGIONS as $url) {
+            if (!justinholtweb\exactly\models\Settings::isExactHost($url)) {
+                return "$url was refused";
+            }
+        }
+
+        return true;
+    });
+
+    check('a __next link to another host is not followed with the token', function() {
+        $api = new justinholtweb\exactly\services\Api();
+
+        try {
+            $api->buildUrl('https://attacker.example/api/v1/1/crm/Accounts?$skiptoken=x');
+
+            return 'it was followed';
+        } catch (ApiException) {
+            return $api->buildUrl(Plugin::getInstance()->getSettings()->getBaseUrl() . '/api/v1/1/crm/Accounts?$skiptoken=x') !== '';
+        }
+    });
+
+    check('saving with no trigger statuses ticked does not throw', function() {
+        // A checkbox group with nothing ticked posts '' — not [] — for the whole field.
+        $probe = new justinholtweb\exactly\models\Settings(['triggerStatusHandles' => '', 'exemptTaxCategoryIds' => '']);
+
+        return $probe->validate() || !$probe->hasErrors('triggerStatusHandles') ?: json_encode($probe->getErrors());
+    });
+
     check('nothing in the settings model is required', function() {
         // A `required` rule would make a fresh install unable to save *any* setting until the
         // Exact app exists — while the redirect URI needed to create that app is on this screen.
@@ -764,6 +901,10 @@ try {
         return in_array('orderId', $indexes, true)
             && in_array('division', $indexes, true)
             && in_array('kind', $indexes, true);
+    });
+
+    check('connections store when the daily call budget resets', function() {
+        return Craft::$app->getDb()->columnExists(Table::CONNECTIONS, 'dailyReset');
     });
 
     // =====================================================================
@@ -954,6 +1095,83 @@ try {
             ?: 'got ' . var_export([$connection?->minutelyRemaining, $connection?->accessToken], true);
     });
 
+    check('a spent daily budget blocks only until its reset time', function() {
+        $future = new Connection(['dailyRemaining' => 0, 'dailyReset' => (time() + 600) * 1000]);
+        $past = new Connection(['dailyRemaining' => 0, 'dailyReset' => (time() - 60) * 1000]);
+        $wait = $future->getSecondsUntilDailyReset();
+
+        // Milliseconds, like the minutely header.
+        return $wait >= 599 && $wait <= 602 && $past->getSecondsUntilDailyReset() === 0
+            ?: "got $wait / " . $past->getSecondsUntilDailyReset();
+    });
+
+    // The guard itself, on the real Api (not the fake): it is the pre-emptive block that used to
+    // refuse every call once the stored count hit 0, so no response could ever refresh it.
+    $guardRateLimit = function(): ?justinholtweb\exactly\errors\RateLimitException {
+        $method = new ReflectionMethod(Api::class, 'guardRateLimit');
+        $method->setAccessible(true);
+
+        try {
+            $method->invoke(new Api());
+
+            return null;
+        } catch (justinholtweb\exactly\errors\RateLimitException $e) {
+            return $e;
+        }
+    };
+
+    check('the daily block lifts once the reset time has passed', function() use ($plugin, $guardRateLimit) {
+        $plugin->getOauth()->getConnection(true);
+        $plugin->getOauth()->recordRateLimits([
+            'dailyRemaining' => 0,
+            'dailyReset' => (time() - 120) * 1000,
+            'minutelyRemaining' => 50,
+        ]);
+        $plugin->getOauth()->getConnection(true);
+
+        $error = $guardRateLimit();
+
+        return $error === null ?: 'still blocked: ' . $error->getMessage();
+    });
+
+    check('the daily block holds until a future reset, and says how long', function() use ($plugin, $guardRateLimit) {
+        $plugin->getOauth()->recordRateLimits(['dailyRemaining' => 0, 'dailyReset' => (time() + 900) * 1000]);
+        $plugin->getOauth()->getConnection(true);
+
+        $error = $guardRateLimit();
+
+        return $error !== null && $error->retryAfter >= 899 && $error->retryAfter <= 902
+            ?: 'got ' . var_export($error?->retryAfter, true);
+    });
+
+    check('a spent daily budget with no reset time stored does not block for ever', function() use ($plugin, $guardRateLimit) {
+        Craft::$app->getDb()->createCommand()->update(Table::CONNECTIONS, [
+            'dailyRemaining' => 0,
+            'dailyReset' => null,
+        ], ['connectionKey' => $plugin->getSettings()->getConnectionKey()])->execute();
+        $plugin->getOauth()->getConnection(true);
+
+        $error = $guardRateLimit();
+
+        return $error === null ?: 'still blocked: ' . $error->getMessage();
+    });
+
+    check('the daily reset header is recorded off a response', function() use ($plugin) {
+        $method = new ReflectionMethod(Api::class, 'recordRateLimits');
+        $method->setAccessible(true);
+        $reset = (time() + 3600) * 1000;
+        $method->invoke(new Api(), new GuzzleHttp\Psr7\Response(200, [
+            'X-RateLimit-Limit' => '5000',
+            'X-RateLimit-Remaining' => '4321',
+            'X-RateLimit-Reset' => (string)$reset,
+        ]));
+
+        $connection = $plugin->getOauth()->getConnection(true);
+
+        return $connection?->dailyReset === $reset && $connection->dailyRemaining === 4321
+            ?: 'got ' . var_export([$connection?->dailyReset, $connection?->dailyRemaining], true);
+    });
+
     check('the division comes from the settings when one is chosen', function() use ($plugin) {
         return $plugin->getOauth()->getDivision() === TEST_DIVISION;
     });
@@ -1070,6 +1288,119 @@ try {
         });
     });
 
+    // Every scenario below matches an account that already exists in Exact, with
+    // `updateExistingAccounts` on, and asks one thing: was it written over?
+    $countPuts = static fn() => count(array_filter($fakeApi->calls, static fn(array $c) => $c['method'] === 'PUT'));
+
+    $registeredUser = static function(string $email): User {
+        global $createdUsers;
+
+        $user = new User();
+        $user->username = $email;
+        $user->email = $email;
+        $user->active = true;
+        $user->password = Craft::$app->getSecurity()->hashPassword('exactly-fixture-' . bin2hex(random_bytes(4)));
+
+        if (!Craft::$app->getElements()->saveElement($user, false)) {
+            throw new RuntimeException('Could not save user: ' . json_encode($user->getErrors()));
+        }
+
+        $createdUsers[] = $user;
+
+        return $user;
+    };
+
+    $fakeApi->accounts[] = ['ID' => 'cc000011-0000-0000-0000-000000000000', 'Code' => str_pad('1011', 18, ' ', STR_PAD_LEFT), 'Name' => 'Victim By VAT NV', 'Email' => "victim-vat-$suffix@example.com", 'VATNumber' => 'BE0417497106', 'Country' => 'BE'];
+    $fakeApi->accounts[] = ['ID' => 'cc000012-0000-0000-0000-000000000000', 'Code' => str_pad('1012', 18, ' ', STR_PAD_LEFT), 'Name' => 'Victim By Email BV', 'Email' => "victim-email-$suffix@example.com", 'VATNumber' => '', 'Country' => 'NL'];
+    $fakeApi->accounts[] = ['ID' => 'cc000013-0000-0000-0000-000000000000', 'Code' => str_pad('1013', 18, ' ', STR_PAD_LEFT), 'Name' => 'Registered Preview BV', 'Email' => "registered-preview-$suffix@example.com", 'VATNumber' => '', 'Country' => 'NL'];
+    $fakeApi->accounts[] = ['ID' => 'cc000014-0000-0000-0000-000000000000', 'Code' => str_pad('1014', 18, ' ', STR_PAD_LEFT), 'Name' => 'Registered Push BV', 'Email' => "registered-push-$suffix@example.com", 'VATNumber' => '', 'Country' => 'NL'];
+
+    check('a stranger typing a real company’s VAT number does not overwrite that company’s account', function() use ($plugin, $variantA, $fakeApi, $suffix, $countPuts) {
+        $order = makeOrder([['variant' => $variantA, 'qty' => 1]], [
+            'email' => "attacker-$suffix@example.com",
+            'countryCode' => 'BE',
+            'locality' => 'Gent',
+            'postalCode' => '9000',
+            'organization' => 'Not The Victim',
+            'organizationTaxId' => 'BE0417497106',
+        ], [], true, 0.0);
+
+        return withSettings(['updateExistingAccounts' => true], function() use ($plugin, $order, $fakeApi, $countPuts) {
+            $fakeApi->reset();
+            $account = $plugin->getAccounts()->resolveForOrder($order);
+
+            return $countPuts() === 0 ?: 'PUT ' . json_encode($fakeApi->calls) . ' matched ' . $account['id'];
+        });
+    });
+
+    check('a guest’s VAT number does not book the order to the company that owns it', function() use ($plugin, $variantA, $fakeApi, $suffix) {
+        $order = makeOrder([['variant' => $variantA, 'qty' => 1]], [
+            'email' => "attacker-two-$suffix@example.com",
+            'countryCode' => 'BE',
+            'locality' => 'Gent',
+            'postalCode' => '9000',
+            'organization' => 'Not The Victim Either',
+            'organizationTaxId' => 'BE0417497106',
+        ], [], true, 0.0);
+
+        $account = $plugin->getAccounts()->resolveForOrder($order);
+
+        return $account['id'] !== 'cc000011-0000-0000-0000-000000000000' && $account['created'] === true
+            ?: 'matched ' . json_encode($account);
+    });
+
+    check('a registered customer is still matched by VAT number', function() use ($plugin, $variantA, $suffix, $registeredUser) {
+        $registeredUser("registered-vat-$suffix@example.com");
+        $order = makeOrder([['variant' => $variantA, 'qty' => 1]], [
+            'email' => "registered-vat-$suffix@example.com",
+            'countryCode' => 'BE',
+            'locality' => 'Gent',
+            'postalCode' => '9000',
+            'organization' => 'Victim By VAT NV',
+            'organizationTaxId' => 'BE0417497106',
+        ], [], true, 0.0);
+
+        $account = $plugin->getAccounts()->resolveForOrder($order);
+
+        return $account['id'] === 'cc000011-0000-0000-0000-000000000000' ?: 'matched ' . json_encode($account);
+    });
+
+    check('a guest checkout does not overwrite the account its email matches', function() use ($plugin, $variantA, $fakeApi, $suffix, $countPuts) {
+        $order = makeOrder([['variant' => $variantA, 'qty' => 1]], ['email' => "victim-email-$suffix@example.com"]);
+
+        return withSettings(['updateExistingAccounts' => true], function() use ($plugin, $order, $fakeApi, $countPuts) {
+            $fakeApi->reset();
+            $plugin->getAccounts()->resolveForOrder($order);
+
+            return $countPuts() === 0 ?: 'PUT was sent';
+        });
+    });
+
+    check('a preview writes nothing to Exact, even for a registered customer', function() use ($plugin, $variantA, $fakeApi, $suffix, $countPuts, $registeredUser) {
+        $registeredUser("registered-preview-$suffix@example.com");
+        $order = makeOrder([['variant' => $variantA, 'qty' => 1]], ['email' => "registered-preview-$suffix@example.com"]);
+
+        return withSettings(['updateExistingAccounts' => true], function() use ($plugin, $order, $fakeApi, $countPuts) {
+            $fakeApi->reset();
+            $plugin->getAccounts()->resolveForOrder($order, false);
+
+            return $countPuts() === 0 ?: 'PUT was sent';
+        });
+    });
+
+    check('a registered customer’s own account is still kept up to date', function() use ($plugin, $variantA, $fakeApi, $suffix, $countPuts, $registeredUser) {
+        // The other half of the three checks above: the fix must narrow the update, not remove it.
+        $registeredUser("registered-push-$suffix@example.com");
+        $order = makeOrder([['variant' => $variantA, 'qty' => 1]], ['email' => "registered-push-$suffix@example.com"]);
+
+        return withSettings(['updateExistingAccounts' => true], function() use ($plugin, $order, $fakeApi, $countPuts) {
+            $fakeApi->reset();
+            $plugin->getAccounts()->resolveForOrder($order);
+
+            return $countPuts() === 1 ?: 'expected one PUT, got ' . $countPuts() . ' (customer credentialed: ' . json_encode($order->getCustomer()?->getIsCredentialed()) . ')';
+        });
+    });
+
     // =====================================================================
     section('Item resolution');
 
@@ -1108,7 +1439,7 @@ try {
 
     check('with no fallback configured, an unmatched SKU fails loudly', function() use ($plugin, $domesticOrder) {
         return withSettings(['fallbackItemCode' => ''], function() use ($plugin, $domesticOrder) {
-            $plugin->getItems()->clearCache();
+            $plugin->getItems()->clearCache(TEST_DIVISION);
 
             try {
                 $plugin->getItems()->resolveForLineItem($domesticOrder->getLineItems()[1]);
@@ -1377,6 +1708,89 @@ try {
         });
     });
 
+    check('a refused order writes nothing to Exact — no account, no item, no invoice', function() use ($plugin, $fakeApi, $suffix) {
+        // A new customer and a SKU Exact has never seen, with creation of both switched on, on an
+        // order Commerce charged no VAT for while the treatment says 21%: a gap far past the
+        // tolerance. The refusal has to come before anything is created.
+        $product = makeProduct("EX-REFUSED-$suffix", 100.00);
+        $order = makeOrder([['variant' => $product->getDefaultVariant(), 'qty' => 1]], ['email' => "refused-new-$suffix@example.com"], [], true, 0.0);
+
+        return withSettings(['createMissingAccounts' => true, 'createMissingItems' => true, 'itemStrategy' => 'sku'], function() use ($plugin, $fakeApi, $order) {
+            $fakeApi->reset();
+            $result = $plugin->getInvoices()->push($order);
+
+            $writes = array_values(array_filter(
+                $fakeApi->calls,
+                static fn(array $call) => in_array($call['method'], ['POST', 'PUT'], true),
+            ));
+
+            return $result['success'] === false
+                && str_contains($result['message'], 'rounding tolerance')
+                && $writes === []
+                ?: 'got ' . json_encode([$result['message'], array_map(static fn(array $call) => $call['method'] . ' ' . $call['endpoint'], $writes)]);
+        });
+    });
+
+    check('a refused order’s preview and push fail on the same refusal', function() use ($plugin, $variantA, $suffix) {
+        // Same path for both: a preview that passed while the push refused would be a lie.
+        $order = makeOrder([['variant' => $variantA, 'qty' => 1]], ['email' => "refused-preview-$suffix@example.com"], [], true, 0.0);
+
+        try {
+            $plugin->getInvoices()->preview($order);
+            $preview = 'built';
+        } catch (ApiException $e) {
+            $preview = $e->getMessage();
+        }
+
+        $push = $plugin->getInvoices()->push($order)['message'];
+
+        return $preview === $push ?: 'preview: ' . $preview . ' / push: ' . $push;
+    });
+
+    check('a missing configured item code fails before a new customer is created', function() use ($plugin, $fakeApi, $variantA, $suffix) {
+        $order = makeOrder([['variant' => $variantA, 'qty' => 1]], ['email' => "missing-item-$suffix@example.com"], [
+            adjustment('discount', 'Coupon', -10.0),
+            adjustment('tax', 'BTW', 18.90, false, null, ['id' => 4242, 'name' => 'BTW hoog', 'rate' => 0.21]),
+        ]);
+
+        return withSettings(['createMissingAccounts' => true, 'discountItemCode' => "NOPE-$suffix"], function() use ($plugin, $fakeApi, $order) {
+            $fakeApi->reset();
+            $result = $plugin->getInvoices()->push($order);
+            $writes = array_values(array_filter(
+                $fakeApi->calls,
+                static fn(array $call) => in_array($call['method'], ['POST', 'PUT'], true),
+            ));
+
+            return $result['success'] === false && str_contains($result['message'], 'does not exist') && $writes === []
+                ?: 'got ' . json_encode([$result['message'], array_map(static fn(array $call) => $call['method'] . ' ' . $call['endpoint'], $writes)]);
+        });
+    });
+
+    check('a preview says a new SKU’s item will be created, instead of showing the fallback the send would not use', function() use ($plugin, $suffix) {
+        $product = makeProduct("EX-NEW-$suffix", 100.00);
+        $order = makeOrder([['variant' => $product->getDefaultVariant(), 'qty' => 1]], ['email' => "preview-new-$suffix@example.com"]);
+
+        return withSettings(['createMissingItems' => true, 'itemStrategy' => 'sku', 'fallbackItemCode' => ''], function() use ($plugin, $order) {
+            $preview = $plugin->getInvoices()->preview($order);
+            $line = $preview['payload']['SalesInvoiceLines'][0] ?? [];
+            $said = array_filter($preview['warnings'], static fn(string $warning) => str_contains($warning, 'An item will be created'));
+
+            return !array_key_exists('Item', $line) && $said !== []
+                ?: 'got ' . json_encode([$line['Item'] ?? null, $preview['warnings']]);
+        });
+    });
+
+    check('a preview with account creation off says the send will fail, not that an account will be created', function() use ($plugin, $variantA, $suffix) {
+        $order = makeOrder([['variant' => $variantA, 'qty' => 1]], ['email' => "preview-noacct-$suffix@example.com"]);
+
+        return withSettings(['createMissingAccounts' => false], function() use ($plugin, $order) {
+            $warnings = implode(' | ', $plugin->getInvoices()->preview($order)['warnings']);
+
+            return str_contains($warnings, 'creating accounts is switched off') && !str_contains($warnings, 'will be created when')
+                ?: 'got ' . $warnings;
+        });
+    });
+
     // =====================================================================
     section('Cross-border VAT');
 
@@ -1450,6 +1864,83 @@ try {
             $code = $result['payload']['SalesInvoiceLines'][0]['VATCode'] ?? null;
 
             return $code === '21' ?: 'got ' . var_export($code, true);
+        });
+    });
+
+    // =====================================================================
+    section('VAT-exempt tax categories');
+
+    // A domestic order Commerce charged no tax on: exactly what an exempt supply looks like.
+    $exemptOrder = makeOrder([['variant' => $variantA, 'qty' => 1]], ['email' => "exempt-$suffix@example.com"], [], true, 0.0);
+    $exemptCategoryId = (int)($exemptOrder->getLineItems()[0]->taxCategoryId ?? 0);
+    $exemptSettings = [
+        'exemptTaxCategoryIds' => [(string)$exemptCategoryId],
+        'vatCodeByTreatment' => array_merge($plugin->getSettings()->vatCodeByTreatment, ['exempt' => '0']),
+    ];
+
+    check('an untaxed line in an exempt category takes the Exempt code, and reconciles', function() use ($plugin, $exemptOrder, $exemptCategoryId, $exemptSettings) {
+        if ($exemptCategoryId <= 0) {
+            return 'the fixture line has no tax category';
+        }
+
+        return withSettings($exemptSettings, function() use ($plugin, $exemptOrder) {
+            $result = $plugin->getInvoices()->buildPayload($exemptOrder, ['allowCreate' => false]);
+
+            return $result['treatment']['treatment'] === 'domestic'
+                && $result['payload']['SalesInvoiceLines'][0]['VATCode'] === '0'
+                && abs($result['totals']['delta']) < 0.005
+                ?: 'got ' . json_encode([$result['payload']['SalesInvoiceLines'][0]['VATCode'] ?? null, $result['totals']]);
+        });
+    });
+
+    check('without the exempt category the same untaxed order is refused, not booked at 21%', function() use ($plugin, $exemptOrder) {
+        try {
+            $plugin->getInvoices()->buildPayload($exemptOrder, ['allowCreate' => false]);
+
+            return 'it was built';
+        } catch (ApiException $e) {
+            return str_contains($e->getMessage(), 'rounding tolerance') ?: $e->getMessage();
+        }
+    });
+
+    check('a line in an exempt category that was charged tax keeps the code for what was charged', function() use ($plugin, $variantA, $suffix, $exemptSettings) {
+        $order = makeOrder([['variant' => $variantA, 'qty' => 1]], ['email' => "exempt-taxed-$suffix@example.com"], [], true, 0.0);
+        $line = $order->getLineItems()[0];
+        $order = makeOrderAdjustments($order, [
+            adjustment('tax', 'BTW', round($line->getSubtotal() * 0.21, 2), false, (int)$line->id, ['id' => 4242, 'name' => 'BTW hoog', 'rate' => 0.21]),
+        ]);
+
+        return withSettings($exemptSettings, function() use ($plugin, $order) {
+            $result = $plugin->getInvoices()->buildPayload($order, ['allowCreate' => false]);
+
+            return $result['payload']['SalesInvoiceLines'][0]['VATCode'] === '21'
+                ?: 'got ' . json_encode($result['payload']['SalesInvoiceLines'][0]['VATCode'] ?? null);
+        });
+    });
+
+    check('once a category is exempt, an unmapped Exempt code is reported as unmapped', function() {
+        $probe = new justinholtweb\exactly\models\Settings(['exemptTaxCategoryIds' => ['3'], 'vatCodeByTreatment' => ['domestic' => '21']]);
+        $none = new justinholtweb\exactly\models\Settings(['exemptTaxCategoryIds' => '', 'vatCodeByTreatment' => ['domestic' => '21']]);
+
+        return in_array('exempt', $probe->getUnmappedTreatments(), true)
+            && !in_array('exempt', $none->getUnmappedTreatments(), true)
+            && $none->getExemptTaxCategoryIds() === [];
+    });
+
+    check('an exempt order with a coupon reconciles and sends — the discount takes the Exempt code', function() use ($plugin, $variantA, $suffix, $exemptSettings) {
+        // A €100 exempt course with a €10 coupon and no tax anywhere. With the discount on the
+        // domestic 21% code, Exact would land 21% of the discount away from what was paid.
+        $order = makeOrder([['variant' => $variantA, 'qty' => 1]], ['email' => "exempt-coupon-$suffix@example.com"], [
+            adjustment('discount', 'Coupon', -10.0),
+        ], true, 0.0);
+
+        return withSettings($exemptSettings, function() use ($plugin, $order) {
+            $result = $plugin->getInvoices()->push($order);
+            $lines = $result['document']?->getDecodedPayload()['SalesInvoiceLines'] ?? [];
+            $codes = array_values(array_unique(array_column($lines, 'VATCode')));
+
+            return $result['success'] && $codes === ['0'] && round((float)$order->getTotalPrice(), 2) === 90.0
+                ?: 'got ' . json_encode([$result['message'], $codes, $order->getTotalPrice()]);
         });
     });
 
@@ -1568,6 +2059,166 @@ try {
         return $error->isRetryable() && $error->retryAfter === 42;
     });
 
+    check('a rate limit escapes push(), with the claim released rather than left sending', function() use ($plugin, $variantA, $fakeApi, $suffix) {
+        $order = makeOrder([['variant' => $variantA, 'qty' => 1]], ['email' => "ratelimit-$suffix@example.com"]);
+        $fakeApi->failures['salesinvoice/SalesInvoices'] = (new justinholtweb\exactly\errors\RateLimitException('Too many requests', 429))->setRetryAfter(42);
+
+        try {
+            $plugin->getInvoices()->push($order);
+            $thrown = null;
+        } catch (justinholtweb\exactly\errors\RateLimitException $e) {
+            $thrown = $e;
+        } finally {
+            $fakeApi->failures = [];
+        }
+
+        $document = $plugin->getDocuments()->getDocument((int)$order->id, TEST_DIVISION);
+
+        if ($thrown === null || $document?->status !== Document::STATUS_FAILED || $document->attempts !== 0) {
+            return 'got ' . json_encode([$thrown !== null, $document?->status, $document?->attempts]);
+        }
+
+        // Not wedged for the 15-minute staleness window: the very next push goes through.
+        $retry = $plugin->getInvoices()->push($order);
+
+        return $retry['success'] && $retry['document']?->attempts === 1
+            ?: 'retry: ' . json_encode([$retry['success'], $retry['message'], $retry['document']?->attempts]);
+    });
+
+    check('a rate-limited queue job re-queues itself with the wait instead of failing', function() use ($plugin, $variantA, $fakeApi, $suffix) {
+        $order = makeOrder([['variant' => $variantA, 'qty' => 1]], ['email' => "requeue-$suffix@example.com"]);
+
+        return withFakeQueue(function(FakeQueue $queue) use ($plugin, $order, $fakeApi) {
+            $fakeApi->failures['salesinvoice/SalesInvoices'] = (new justinholtweb\exactly\errors\RateLimitException('Too many requests', 429))->setRetryAfter(42);
+
+            try {
+                (new justinholtweb\exactly\jobs\PushOrder(['orderId' => (int)$order->id]))->execute($queue);
+            } catch (Throwable $e) {
+                return 'the job failed: ' . $e->getMessage();
+            } finally {
+                $fakeApi->failures = [];
+            }
+
+            $document = $plugin->getDocuments()->getDocument((int)$order->id, TEST_DIVISION);
+            $requeued = $queue->pushed[0] ?? null;
+
+            return count($queue->pushed) === 1
+                && $requeued['delay'] === 42
+                && $requeued['job'] instanceof justinholtweb\exactly\jobs\PushOrder
+                && $requeued['job']->mayRequeue === false
+                && $document?->status === Document::STATUS_QUEUED
+                ?: 'got ' . json_encode([count($queue->pushed), $requeued['delay'] ?? null, $document?->status]);
+        });
+    });
+
+    check('an inline push that hits the rate limit reports it rather than throwing', function() use ($plugin, $variantA, $fakeApi, $suffix) {
+        // The order-save path when the queue is switched off: it has to fail open.
+        $order = makeOrder([['variant' => $variantA, 'qty' => 1]], ['email' => "inline-rl-$suffix@example.com"]);
+
+        return withSettings(['useQueue' => false], function() use ($plugin, $order, $fakeApi) {
+            $fakeApi->failures['salesinvoice/SalesInvoices'] = (new justinholtweb\exactly\errors\RateLimitException('Too many requests', 429))->setRetryAfter(30);
+
+            try {
+                $result = $plugin->getSync()->schedule($order);
+            } finally {
+                $fakeApi->failures = [];
+            }
+
+            return $result['queued'] === false && str_contains($result['message'], '30 seconds')
+                ?: 'got ' . json_encode($result);
+        });
+    });
+
+    check('a failed push waits retryDelayMinutes before the retry paths pick it up', function() use ($plugin, $variantA, $fakeApi, $suffix) {
+        $order = makeOrder([['variant' => $variantA, 'qty' => 1]], ['email' => "delay-$suffix@example.com"]);
+        $fakeApi->failures['salesinvoice/SalesInvoices'] = new ApiException('Journal 70 is closed', 400);
+        $plugin->getInvoices()->push($order);
+        $fakeApi->failures = [];
+
+        $document = $plugin->getDocuments()->getDocument((int)$order->id, TEST_DIVISION);
+        $retryable = fn() => in_array($document->id, array_map(
+            static fn(Document $row) => $row->id,
+            $plugin->getDocuments()->getRetryable(1000),
+        ), true);
+
+        $justFailed = withSettings(['retryDelayMinutes' => 15], $retryable);
+        $noDelay = withSettings(['retryDelayMinutes' => 0], $retryable);
+
+        Craft::$app->getDb()->createCommand()->update(Table::DOCUMENTS, [
+            'dateLastAttempt' => Db::prepareDateForDb((new DateTime())->modify('-20 minutes')),
+        ], ['id' => $document->id])->execute();
+
+        $waited = withSettings(['retryDelayMinutes' => 15], $retryable);
+
+        return $justFailed === false && $noDelay === true && $waited === true
+            ?: 'got ' . json_encode([$justFailed, $noDelay, $waited]);
+    });
+
+    check('“Queue it” on an invoiced order does not reopen it for a second invoice', function() use ($plugin, $pushOrder) {
+        return withSettings(['useQueue' => true], function() use ($plugin, $pushOrder) {
+            return withFakeQueue(function(FakeQueue $queue) use ($plugin, $pushOrder) {
+                $plugin->getSync()->schedule($pushOrder);
+                $after = $plugin->getDocuments()->getDocument((int)$pushOrder->id, TEST_DIVISION);
+
+                return $after?->isSent() === true ?: 'status became ' . $after?->status;
+            });
+        });
+    });
+
+    $ourJobs = static fn(FakeQueue $queue) => array_values(array_filter(
+        $queue->pushed,
+        static fn(array $pushed) => $pushed['job'] instanceof justinholtweb\exactly\jobs\PushOrder,
+    ));
+
+    check('scheduling an order another worker is sending leaves it sending and pushes no job', function() use ($plugin, $variantA, $suffix, $ourJobs) {
+        // The duplicate-invoice race: flipping a fresh `sending` row to `queued` let a new job
+        // claim it and POST a second invoice while the first worker was still waiting on Exact.
+        $order = makeOrder([['variant' => $variantA, 'qty' => 1]], ['email' => "inflight-q-$suffix@example.com"]);
+        $plugin->getDocuments()->claim($order, TEST_DIVISION);
+
+        return withSettings(['useQueue' => true], function() use ($plugin, $order, $ourJobs) {
+            return withFakeQueue(function(FakeQueue $queue) use ($plugin, $order, $ourJobs) {
+                $result = $plugin->getSync()->schedule($order);
+                $after = $plugin->getDocuments()->getDocument((int)$order->id, TEST_DIVISION);
+                $second = $plugin->getDocuments()->claim($order, TEST_DIVISION);
+
+                return $result['queued'] === false
+                    && $ourJobs($queue) === []
+                    && $after?->status === Document::STATUS_SENDING
+                    && $second['claimed'] === false
+                    ?: 'got ' . json_encode([$result, count($ourJobs($queue)), $after?->status, $second['claimed']]);
+            });
+        });
+    });
+
+    check('a stale sending row can still be queued, as claim() would take it', function() use ($plugin, $variantA, $suffix) {
+        $order = makeOrder([['variant' => $variantA, 'qty' => 1]], ['email' => "stale-q-$suffix@example.com"]);
+        $claim = $plugin->getDocuments()->claim($order, TEST_DIVISION);
+        Craft::$app->getDb()->createCommand()->update(Table::DOCUMENTS, [
+            'dateLastAttempt' => Db::prepareDateForDb((new DateTime())->modify('-30 minutes')),
+        ], ['id' => $claim['document']->id])->execute();
+
+        return $plugin->getDocuments()->markQueued($claim['document'])
+            && $plugin->getDocuments()->getDocumentById($claim['document']->id)?->status === Document::STATUS_QUEUED;
+    });
+
+    check('a rate-limit re-queue does not push a second job for a row someone else now holds', function() use ($plugin, $variantA, $suffix, $ourJobs) {
+        $order = makeOrder([['variant' => $variantA, 'qty' => 1]], ['email' => "requeue-held-$suffix@example.com"]);
+        $plugin->getDocuments()->claim($order, TEST_DIVISION);
+
+        return withFakeQueue(function(FakeQueue $queue) use ($plugin, $order, $ourJobs) {
+            $job = new justinholtweb\exactly\jobs\PushOrder(['orderId' => (int)$order->id]);
+            $requeue = new ReflectionMethod($job, 'requeue');
+            $requeue->setAccessible(true);
+            $requeue->invoke($job, 30);
+
+            $after = $plugin->getDocuments()->getDocument((int)$order->id, TEST_DIVISION);
+
+            return $ourJobs($queue) === [] && $after?->status === Document::STATUS_SENDING
+                ?: 'got ' . json_encode([count($ourJobs($queue)), $after?->status]);
+        });
+    });
+
     check('a sent document is flagged stale when the order changes underneath it', function() use ($plugin, $pushOrder) {
         $document = $plugin->getDocuments()->getDocument((int)$pushOrder->id, TEST_DIVISION);
 
@@ -1591,6 +2242,15 @@ try {
             ?: 'got ' . json_encode([$result['success'], $result['message'], count($documents)]);
     });
 
+    check('a second credit note is refused in credit-note words, not invoice ones', function() use ($plugin, $pushOrder) {
+        $result = $plugin->getSync()->creditNote($pushOrder);
+
+        return $result['success'] === false
+            && str_contains($result['message'], 'already has credit note')
+            && !str_contains($result['message'], 'already invoice')
+            ?: 'got ' . $result['message'];
+    });
+
     check('crediting an order that was never invoiced is refused', function() use ($plugin, $variantA, $suffix) {
         $order = makeOrder([['variant' => $variantA, 'qty' => 1]], ['email' => "uncredited-$suffix@example.com"]);
         $result = $plugin->getSync()->creditNote($order);
@@ -1609,6 +2269,237 @@ try {
             $amount = $posted['SalesInvoiceLines'][0]['AmountFC'] ?? null;
 
             return $amount !== null && $amount < 0 ?: 'got ' . var_export($amount, true);
+        });
+    });
+
+    // =====================================================================
+    section('Credit notes on refund');
+
+    $refund = function(Order $order, float $amount): craft\commerce\models\Transaction {
+        return new craft\commerce\models\Transaction([
+            'orderId' => $order->id,
+            'type' => craft\commerce\records\Transaction::TYPE_REFUND,
+            'status' => craft\commerce\records\Transaction::STATUS_SUCCESS,
+            'amount' => $amount,
+            'paymentAmount' => $amount,
+        ]);
+    };
+
+    $refundOrder = makeOrder([['variant' => $variantA, 'qty' => 1]], ['email' => "refund-$suffix@example.com"]);
+    $plugin->getInvoices()->push($refundOrder);
+
+    check('with the setting off a refund queues nothing', function() use ($plugin, $refund, $refundOrder) {
+        return withSettings(['creditNotesOnRefund' => false], function() use ($plugin, $refund, $refundOrder) {
+            return withFakeQueue(function(FakeQueue $queue) use ($plugin, $refund, $refundOrder) {
+                $plugin->getSync()->handleRefund($refund($refundOrder, (float)$refundOrder->getTotalPrice()));
+
+                return $queue->pushed === [] ?: count($queue->pushed) . ' jobs';
+            });
+        });
+    });
+
+    check('a partial refund issues no credit note, and says so in the log', function() use ($plugin, $refund, $refundOrder) {
+        return withSettings(['creditNotesOnRefund' => true, 'useQueue' => false], function() use ($plugin, $refund, $refundOrder) {
+            return withFakeQueue(function(FakeQueue $queue) use ($plugin, $refund, $refundOrder) {
+                $reason = $plugin->getSync()->handleRefund($refund($refundOrder, round($refundOrder->getTotalPrice() / 2, 2)));
+                $logged = $plugin->getLog()->getEntries(['action' => 'sync.refund'], 5);
+
+                return $reason === 'partial'
+                    && $queue->pushed === []
+                    && $logged !== []
+                    && str_contains((string)$logged[0]->summary, 'partly refunded')
+                    ?: 'got ' . json_encode([$reason, count($queue->pushed), $logged[0]->summary ?? null]);
+            });
+        });
+    });
+
+    check('a refund on an order that was never invoiced queues nothing', function() use ($plugin, $refund, $variantA, $suffix) {
+        $order = makeOrder([['variant' => $variantA, 'qty' => 1]], ['email' => "refund-uninvoiced-$suffix@example.com"]);
+
+        return withSettings(['creditNotesOnRefund' => true], function() use ($plugin, $refund, $order) {
+            return withFakeQueue(function(FakeQueue $queue) use ($plugin, $refund, $order) {
+                $reason = $plugin->getSync()->handleRefund($refund($order, (float)$order->getTotalPrice()));
+
+                return $reason === 'not invoiced' && $queue->pushed === [] ?: 'got ' . json_encode([$reason, count($queue->pushed)]);
+            });
+        });
+    });
+
+    check('a full refund, through Commerce’s after-save-transaction event, queues a credit note — even with the queue off', function() use ($plugin, $refund, $refundOrder, $fakeApi) {
+        return withSettings(['creditNotesOnRefund' => true, 'useQueue' => false], function() use ($plugin, $refund, $refundOrder, $fakeApi) {
+            return withFakeQueue(function(FakeQueue $queue) use ($plugin, $refund, $refundOrder, $fakeApi) {
+                $before = $fakeApi->countCalls('salesinvoice/SalesInvoices');
+                $refundTransaction = $refund($refundOrder, (float)$refundOrder->getTotalPrice());
+
+                Commerce::getInstance()->getTransactions()->trigger(
+                    craft\commerce\services\Transactions::EVENT_AFTER_SAVE_TRANSACTION,
+                    new craft\commerce\events\TransactionEvent(['transaction' => $refundTransaction]),
+                );
+
+                // Only Exactly's jobs: sibling plugins in this harness listen to the same event.
+                $ours = array_values(array_filter(
+                    $queue->pushed,
+                    static fn(array $pushed) => $pushed['job'] instanceof justinholtweb\exactly\jobs\PushOrder,
+                ));
+                $job = $ours[0]['job'] ?? null;
+
+                return count($ours) === 1
+                    && $job->orderId === (int)$refundOrder->id
+                    && $job->kind === Document::KIND_CREDIT_NOTE
+                    && $fakeApi->countCalls('salesinvoice/SalesInvoices') === $before
+                    ?: 'got ' . json_encode([count($ours), $job?->kind ?? null]);
+            });
+        });
+    });
+
+    check('the queued job writes the credit note, and a duplicate job cannot write a second', function() use ($plugin, $refundOrder, $fakeApi) {
+        return withFakeQueue(function(FakeQueue $queue) use ($plugin, $refundOrder, $fakeApi) {
+            $job = fn() => new justinholtweb\exactly\jobs\PushOrder(['orderId' => (int)$refundOrder->id, 'kind' => Document::KIND_CREDIT_NOTE]);
+            $before = $fakeApi->countCalls('salesinvoice/SalesInvoices');
+
+            $job()->execute($queue);
+            $posted = $fakeApi->lastPost('salesinvoice/SalesInvoices');
+            $job()->execute($queue);
+
+            $credit = $plugin->getDocuments()->getDocument((int)$refundOrder->id, TEST_DIVISION, Document::KIND_CREDIT_NOTE);
+
+            return ($posted['Type'] ?? null) === 8021
+                && $credit?->isSent()
+                && $fakeApi->countCalls('salesinvoice/SalesInvoices') === $before + 1
+                ?: 'got ' . json_encode([$posted['Type'] ?? null, $credit?->status, $fakeApi->countCalls('salesinvoice/SalesInvoices') - $before]);
+        });
+    });
+
+    check('a second refund event after the credit note queues nothing', function() use ($plugin, $refund, $refundOrder) {
+        return withSettings(['creditNotesOnRefund' => true], function() use ($plugin, $refund, $refundOrder) {
+            return withFakeQueue(function(FakeQueue $queue) use ($plugin, $refund, $refundOrder) {
+                $reason = $plugin->getSync()->handleRefund($refund($refundOrder, (float)$refundOrder->getTotalPrice()));
+
+                return $reason === 'already credited' && $queue->pushed === [] ?: 'got ' . json_encode([$reason, count($queue->pushed)]);
+            });
+        });
+    });
+
+    check('a refund Exactly cannot handle never reaches the merchant as an error', function() use ($plugin, $refund, $refundOrder) {
+        // Fails open: the gateway has already refunded, and that cannot be undone.
+        return withSettings(['creditNotesOnRefund' => true], function() use ($plugin, $refundOrder) {
+            $broken = new craft\commerce\models\Transaction([
+                'orderId' => 999999999,
+                'type' => craft\commerce\records\Transaction::TYPE_REFUND,
+                'status' => craft\commerce\records\Transaction::STATUS_SUCCESS,
+                'amount' => 10.0,
+            ]);
+
+            try {
+                Commerce::getInstance()->getTransactions()->trigger(
+                    craft\commerce\services\Transactions::EVENT_AFTER_SAVE_TRANSACTION,
+                    new craft\commerce\events\TransactionEvent(['transaction' => $broken]),
+                );
+            } catch (Throwable $e) {
+                return 'threw ' . get_class($e) . ': ' . $e->getMessage();
+            }
+
+            return true;
+        });
+    });
+
+    check('a full refund a cent short in another currency still counts as full', function() use ($plugin, $refund, $variantA, $suffix, $ourJobs) {
+        $order = makeOrder([['variant' => $variantA, 'qty' => 1]], ['email' => "refund-cent-$suffix@example.com"]);
+        $plugin->getInvoices()->push($order);
+
+        return withSettings(['creditNotesOnRefund' => true, 'roundingTolerance' => 0.02], function() use ($plugin, $refund, $order, $ourJobs) {
+            return withFakeQueue(function(FakeQueue $queue) use ($plugin, $refund, $order, $ourJobs) {
+                $reason = $plugin->getSync()->handleRefund($refund($order, round($order->getTotalPrice() - 0.01, 2)));
+
+                return $reason === null && count($ourJobs($queue)) === 1 ?: 'got ' . json_encode([$reason, count($ourJobs($queue))]);
+            });
+        });
+    });
+
+    check('a refund still processing at the gateway queues nothing until it settles', function() use ($plugin, $variantA, $suffix, $ourJobs) {
+        $order = makeOrder([['variant' => $variantA, 'qty' => 1]], ['email' => "refund-processing-$suffix@example.com"]);
+        $plugin->getInvoices()->push($order);
+        $make = fn(string $status) => new craft\commerce\models\Transaction([
+            'orderId' => $order->id,
+            'type' => craft\commerce\records\Transaction::TYPE_REFUND,
+            'status' => $status,
+            'amount' => (float)$order->getTotalPrice(),
+        ]);
+
+        return withSettings(['creditNotesOnRefund' => true], function() use ($make, $ourJobs) {
+            return withFakeQueue(function(FakeQueue $queue) use ($make, $ourJobs) {
+                $fire = fn($transaction) => Commerce::getInstance()->getTransactions()->trigger(
+                    craft\commerce\services\Transactions::EVENT_AFTER_SAVE_TRANSACTION,
+                    new craft\commerce\events\TransactionEvent(['transaction' => $transaction]),
+                );
+
+                $fire($make(craft\commerce\records\Transaction::STATUS_PROCESSING));
+                $whileProcessing = count($ourJobs($queue));
+                // The webhook's settlement arrives as a new success transaction.
+                $fire($make(craft\commerce\records\Transaction::STATUS_SUCCESS));
+
+                return $whileProcessing === 0 && count($ourJobs($queue)) === 1
+                    ?: 'got ' . json_encode([$whileProcessing, count($ourJobs($queue))]);
+            });
+        });
+    });
+
+    check('a credit-note job whose invoice is gone closes its queued row instead of leaving it queued', function() use ($plugin, $variantA, $suffix) {
+        $order = makeOrder([['variant' => $variantA, 'qty' => 1]], ['email' => "credit-orphan-$suffix@example.com"]);
+        $plugin->getInvoices()->push($order);
+        $credit = $plugin->getDocuments()->claim($order, TEST_DIVISION, Document::KIND_CREDIT_NOTE)['document'];
+        Craft::$app->getDb()->createCommand()->update(Table::DOCUMENTS, ['status' => Document::STATUS_QUEUED], ['id' => $credit->id])->execute();
+        // The invoice stops being tracked between queueing and running.
+        $invoice = $plugin->getDocuments()->getDocument((int)$order->id, TEST_DIVISION);
+        $plugin->getDocuments()->delete((int)$invoice->id);
+
+        return withFakeQueue(function(FakeQueue $queue) use ($plugin, $order, $credit) {
+            (new justinholtweb\exactly\jobs\PushOrder(['orderId' => (int)$order->id, 'kind' => Document::KIND_CREDIT_NOTE]))->execute($queue);
+            $after = $plugin->getDocuments()->getDocumentById((int)$credit->id);
+
+            return $after?->status === Document::STATUS_SKIPPED && str_contains((string)$after->lastError, 'no Exact Online invoice')
+                ?: 'got ' . json_encode([$after?->status, $after?->lastError]);
+        });
+    });
+
+    check('a refund arriving while the credit note is mid-send pushes no second job', function() use ($plugin, $refund, $variantA, $suffix, $ourJobs) {
+        $order = makeOrder([['variant' => $variantA, 'qty' => 1]], ['email' => "refund-inflight-$suffix@example.com"]);
+        $plugin->getInvoices()->push($order);
+        $plugin->getDocuments()->claim($order, TEST_DIVISION, Document::KIND_CREDIT_NOTE);
+
+        return withSettings(['creditNotesOnRefund' => true], function() use ($plugin, $refund, $order, $ourJobs) {
+            return withFakeQueue(function(FakeQueue $queue) use ($plugin, $refund, $order, $ourJobs) {
+                $reason = $plugin->getSync()->handleRefund($refund($order, (float)$order->getTotalPrice()));
+                $credit = $plugin->getDocuments()->getDocument((int)$order->id, TEST_DIVISION, Document::KIND_CREDIT_NOTE);
+
+                return $reason === 'in flight' && $ourJobs($queue) === [] && $credit?->status === Document::STATUS_SENDING
+                    ?: 'got ' . json_encode([$reason, count($ourJobs($queue)), $credit?->status]);
+            });
+        });
+    });
+
+    check('a failed credit note is retried as a credit note, not as an invoice', function() use ($plugin, $variantA, $fakeApi, $suffix) {
+        $order = makeOrder([['variant' => $variantA, 'qty' => 1]], ['email' => "credit-retry-$suffix@example.com"]);
+        $plugin->getInvoices()->push($order);
+        $fakeApi->failures['salesinvoice/SalesInvoices'] = new ApiException('Journal 70 is closed', 400);
+        $plugin->getInvoices()->push($order, ['kind' => Document::KIND_CREDIT_NOTE]);
+        $fakeApi->failures = [];
+
+        $credit = $plugin->getDocuments()->getDocument((int)$order->id, TEST_DIVISION, Document::KIND_CREDIT_NOTE);
+        Craft::$app->getDb()->createCommand()->update(Table::DOCUMENTS, [
+            'dateLastAttempt' => Db::prepareDateForDb(new DateTime('2000-01-01')),
+        ], ['id' => $credit->id])->execute();
+
+        return withSettings(['useQueue' => true], function() use ($plugin, $order) {
+            return withFakeQueue(function(FakeQueue $queue) use ($plugin, $order) {
+                $plugin->getSync()->retryFailed(1);
+                $job = $queue->pushed[0]['job'] ?? null;
+
+                return $job instanceof justinholtweb\exactly\jobs\PushOrder
+                    && $job->orderId === (int)$order->id
+                    && $job->kind === Document::KIND_CREDIT_NOTE
+                    ?: 'got ' . json_encode([$job?->orderId ?? null, $job?->kind ?? null]);
+            });
         });
     });
 
@@ -1666,14 +2557,52 @@ try {
     // =====================================================================
     section('Payments');
 
-    check('an invoice missing from the open items list is treated as paid', function() use ($plugin, $fakeApi, $pushOrder) {
+    $paidOrder = makeOrder([['variant' => $variantA, 'qty' => 1]], ['email' => "paid-$suffix@example.com"]);
+    $plugin->getInvoices()->push($paidOrder);
+
+    check('a processed invoice missing from the open items list is treated as paid', function() use ($plugin, $fakeApi, $paidOrder) {
+        $document = $plugin->getDocuments()->getDocument((int)$paidOrder->id, TEST_DIVISION);
+        $fakeApi->invoiceStatuses[$document->exactInvoiceId] = 50;
         $fakeApi->receivables = [];
         $result = $plugin->getPayments()->sync();
 
-        $document = $plugin->getDocuments()->getDocument((int)$pushOrder->id, TEST_DIVISION);
+        $after = $plugin->getDocuments()->getDocument((int)$paidOrder->id, TEST_DIVISION);
 
-        return $result['checked'] > 0 && $document?->paymentStatus === 'paid'
-            ?: 'got ' . json_encode([$result, $document?->paymentStatus]);
+        return $result['paid'] > 0 && $after?->paymentStatus === 'paid'
+            ?: 'got ' . json_encode([$result, $after?->paymentStatus]);
+    });
+
+    check('a credit-noted invoice off the open items list is “credited”, not paid, and the order is not moved to paid', function() use ($plugin, $fakeApi, $pushOrder, $storeId) {
+        // $pushOrder has a sent credit note (the Credit notes section). Matching the two in Exact
+        // takes the invoice off the receivables list — which is not the customer paying.
+        $statuses = Commerce::getInstance()->getOrderStatuses()->getAllOrderStatuses($storeId);
+        $order = Order::find()->id($pushOrder->id)->status(null)->one();
+        $target = null;
+
+        foreach ($statuses as $status) {
+            if ((int)$status->id !== (int)$order->orderStatusId) {
+                $target = $status;
+                break;
+            }
+        }
+
+        if ($target === null) {
+            return 'the harness needs two order statuses';
+        }
+
+        $document = $plugin->getDocuments()->getDocument((int)$pushOrder->id, TEST_DIVISION);
+        $fakeApi->invoiceStatuses[$document->exactInvoiceId] = 50;
+        $fakeApi->receivables = [];
+
+        return withSettings(['paidStatusHandle' => $target->handle], function() use ($plugin, $pushOrder, $order) {
+            $plugin->getPayments()->sync();
+
+            $after = $plugin->getDocuments()->getDocument((int)$pushOrder->id, TEST_DIVISION);
+            $orderAfter = Order::find()->id($pushOrder->id)->status(null)->one();
+
+            return $after?->paymentStatus === 'credited' && (int)$orderAfter->orderStatusId === (int)$order->orderStatusId
+                ?: 'got ' . json_encode([$after?->paymentStatus, $order->orderStatusId, $orderAfter->orderStatusId]);
+        });
     });
 
     check('an invoice on the open items list is outstanding, with the amount recorded', function() use ($plugin, $fakeApi, $pushOrder) {
@@ -1697,6 +2626,113 @@ try {
         return withSettings(['paymentWriteback' => false], function() use ($plugin) {
             return $plugin->getPayments()->sync()['checked'] === 0;
         });
+    });
+
+    $statusOrder = makeOrder([['variant' => $variantA, 'qty' => 1]], ['email' => "status-$suffix@example.com"]);
+    $plugin->getInvoices()->push($statusOrder);
+    $statusDocument = $plugin->getDocuments()->getDocument((int)$statusOrder->id, TEST_DIVISION);
+
+    check('a draft invoice off the open items list is draft, not paid', function() use ($plugin, $fakeApi, $statusOrder, $statusDocument) {
+        $fakeApi->receivables = [];
+        $plugin->getPayments()->sync();
+        $after = $plugin->getDocuments()->getDocument((int)$statusOrder->id, TEST_DIVISION);
+
+        return $statusDocument?->isDraft() && $after?->paymentStatus === 'draft'
+            ?: 'got ' . json_encode([$statusDocument?->exactStatus, $after?->paymentStatus]);
+    });
+
+    check('an open but unprocessed invoice is still not reported paid', function() use ($plugin, $fakeApi, $statusOrder, $statusDocument) {
+        // Status 20 is not in the ledger either, so missing from the receivables list proves nothing.
+        $fakeApi->invoiceStatuses[$statusDocument->exactInvoiceId] = 20;
+        $plugin->getPayments()->sync();
+        $after = $plugin->getDocuments()->getDocument((int)$statusOrder->id, TEST_DIVISION);
+
+        return $after?->exactStatus === 20 && $after->paymentStatus === 'draft'
+            ?: 'got ' . json_encode([$after?->exactStatus, $after?->paymentStatus]);
+    });
+
+    check('a failed status read never turns a draft into paid', function() use ($plugin, $fakeApi, $statusOrder, $statusDocument) {
+        $fakeApi->invoiceStatuses[$statusDocument->exactInvoiceId] = 50;
+        $fakeApi->failures['salesinvoice/SalesInvoices'] = new ApiException('Service unavailable', 503);
+
+        try {
+            $result = $plugin->getPayments()->sync();
+        } finally {
+            $fakeApi->failures = [];
+        }
+
+        $after = $plugin->getDocuments()->getDocument((int)$statusOrder->id, TEST_DIVISION);
+
+        return $result['errors'] !== [] && $after?->paymentStatus === 'draft'
+            ?: 'got ' . json_encode([$result['errors'], $after?->paymentStatus]);
+    });
+
+    check('once Exact processes the invoice, the next sync re-reads its status and reports it paid', function() use ($plugin, $fakeApi, $statusOrder, $statusDocument) {
+        // The bug: the status was stored once at creation (always a draft) and never read again,
+        // so every invoice was reported as a draft for ever.
+        $fakeApi->invoiceStatuses[$statusDocument->exactInvoiceId] = 50;
+        $fakeApi->receivables = [];
+        $plugin->getPayments()->sync();
+        $after = $plugin->getDocuments()->getDocument((int)$statusOrder->id, TEST_DIVISION);
+
+        return $after?->exactStatus === 50 && $after->paymentStatus === 'paid'
+            ?: 'got ' . json_encode([$after?->exactStatus, $after?->paymentStatus]);
+    });
+
+    check('statuses are read in batches with one $filter, and a processed invoice is not read again', function() use ($plugin, $fakeApi, $variantA, $suffix, $statusDocument) {
+        for ($i = 0; $i < 3; $i++) {
+            $plugin->getInvoices()->push(makeOrder([['variant' => $variantA, 'qty' => 1]], ['email' => "batch$i-$suffix@example.com"]));
+        }
+
+        $unprocessed = array_filter(
+            $plugin->getDocuments()->find(['status' => Document::STATUS_SENT, 'kind' => Document::KIND_INVOICE], 500),
+            static fn(Document $document) => !$document->isProcessed() && $document->exactInvoiceId !== null,
+        );
+
+        $fakeApi->reset();
+        $plugin->getPayments()->sync();
+
+        $reads = array_values(array_filter(
+            $fakeApi->calls,
+            static fn(array $call) => $call['endpoint'] === 'salesinvoice/SalesInvoices' && $call['method'] === 'GET*',
+        ));
+        $filters = implode(' ', array_map(static fn(array $call) => (string)($call['params']['filter'] ?? ''), $reads));
+        $expected = (int)ceil(count($unprocessed) / justinholtweb\exactly\services\Payments::STATUS_BATCH);
+
+        return count($unprocessed) >= 3
+            && count($reads) === $expected
+            && substr_count($filters, 'InvoiceID eq') === count($unprocessed)
+            && !str_contains($filters, (string)$statusDocument->exactInvoiceId)
+            ?: 'got ' . json_encode([count($unprocessed), count($reads), $expected, substr_count($filters, 'InvoiceID eq')]);
+    });
+
+    check('one failed status batch keeps what the other batches read', function() use ($plugin, $fakeApi, $variantA, $suffix) {
+        // B first, then A: the newest is read first, so A's batch is the one that fails.
+        $orderB = makeOrder([['variant' => $variantA, 'qty' => 1]], ['email' => "batch-b-$suffix@example.com"]);
+        $plugin->getInvoices()->push($orderB);
+        $orderA = makeOrder([['variant' => $variantA, 'qty' => 1]], ['email' => "batch-a-$suffix@example.com"]);
+        $plugin->getInvoices()->push($orderA);
+
+        $docB = $plugin->getDocuments()->getDocument((int)$orderB->id, TEST_DIVISION);
+        $fakeApi->invoiceStatuses[$docB->exactInvoiceId] = 50;
+        $fakeApi->receivables = [];
+
+        $payments = $plugin->getPayments();
+        $payments->statusBatch = 1;
+        $fakeApi->reset();
+        $fakeApi->failNthStatusRead = 1;
+
+        try {
+            $result = $payments->sync();
+        } finally {
+            $payments->statusBatch = justinholtweb\exactly\services\Payments::STATUS_BATCH;
+            $fakeApi->failNthStatusRead = 0;
+        }
+
+        $afterB = $plugin->getDocuments()->getDocument((int)$orderB->id, TEST_DIVISION);
+
+        return $result['errors'] !== [] && $afterB?->exactStatus === 50 && $afterB->paymentStatus === 'paid'
+            ?: 'got ' . json_encode([$result['errors'], $afterB?->exactStatus, $afterB?->paymentStatus]);
     });
 
     // =====================================================================
@@ -1758,7 +2794,9 @@ try {
         $result = $plugin->getSync()->backfill(null, 5, true);
         $after = Craft::$app->getQueue()->getTotalJobs();
 
-        return $result['queued'] > 0 && $before === $after ?: "jobs went from $before to $after";
+        // `<=`, not `===`: the shared harness's queue runner drains jobs while this runs, so the
+        // count can fall. What a dry run must never do is add one.
+        return $result['queued'] > 0 && $after <= $before ?: "jobs went from $before to $after";
     });
 
     check('a real backfill queues jobs', function() use ($plugin) {
@@ -1776,6 +2814,95 @@ try {
 
         return isset($summary['sent'], $summary['failed'], $summary['queued'], $summary['trigger'])
             && $summary['sent'] > 0;
+    });
+
+    // =====================================================================
+    section('Console');
+
+    $syncController = new justinholtweb\exactly\console\controllers\SyncController('sync', $plugin);
+    $baseOptions = $syncController->options('status');
+
+    check('each sync action registers exactly the options it reads', function() use ($syncController, $baseOptions) {
+        $extra = fn(string $action) => array_values(array_diff($syncController->options($action), $baseOptions));
+
+        $got = [
+            'backfill' => $extra('backfill'),
+            'retry' => $extra('retry'),
+            'payments' => $extra('payments'),
+            'order' => $extra('order'),
+            'pending' => $extra('pending'),
+        ];
+
+        return $got === [
+            'backfill' => ['dryRun', 'limit', 'since', 'now'],
+            'retry' => ['limit', 'now'],
+            'payments' => ['limit'],
+            'order' => [],
+            'pending' => [],
+        ] ?: 'got ' . json_encode($got);
+    });
+
+    check('payments --limit is accepted and honoured', function() use ($plugin, $fakeApi) {
+        $controller = new justinholtweb\exactly\console\controllers\SyncController('sync', $plugin);
+        $controller->limit = 1;
+        $fakeApi->reset();
+        $exit = $controller->runAction('payments', ['limit' => '1']);
+
+        return $exit === 0 && $controller->limit === 1 ?: "exit $exit, limit {$controller->limit}";
+    });
+
+    check('retry --now pushes inline instead of queueing', function() use ($plugin, $variantA, $fakeApi, $suffix) {
+        $order = makeOrder([['variant' => $variantA, 'qty' => 1]], ['email' => "retry-now-$suffix@example.com"]);
+        $fakeApi->failures['salesinvoice/SalesInvoices'] = new ApiException('Journal 70 is closed', 400);
+        $plugin->getInvoices()->push($order);
+        $fakeApi->failures = [];
+
+        // Make it the first retryable row, so `--limit 1` touches nothing else.
+        $document = $plugin->getDocuments()->getDocument((int)$order->id, TEST_DIVISION);
+        Craft::$app->getDb()->createCommand()->update(Table::DOCUMENTS, [
+            'dateLastAttempt' => Db::prepareDateForDb(new DateTime('2000-01-01')),
+        ], ['id' => $document->id])->execute();
+
+        return withSettings(['useQueue' => true], function() use ($plugin, $order) {
+            return withFakeQueue(function(FakeQueue $queue) use ($plugin, $order) {
+                $controller = new justinholtweb\exactly\console\controllers\SyncController('sync', $plugin);
+                $controller->limit = 1;
+                $controller->now = true;
+                $controller->actionRetry();
+
+                $after = $plugin->getDocuments()->getDocument((int)$order->id, TEST_DIVISION);
+
+                return $queue->pushed === [] && $after?->isSent()
+                    ?: 'got ' . json_encode([count($queue->pushed), $after?->status]);
+            });
+        });
+    });
+
+    // =====================================================================
+    section('Settings screen');
+
+    check('the redirect URI warning shows only when the URI carries a query string', function() use ($plugin) {
+        $render = function(bool $clean) use ($plugin): string {
+            $settings = new class(array_merge($plugin->getSettings()->toArray(), ['clean' => $clean])) extends justinholtweb\exactly\models\Settings {
+                public bool $clean = true;
+
+                public function redirectUriIsClean(): bool
+                {
+                    return $this->clean;
+                }
+            };
+
+            return Craft::$app->getView()->renderTemplate('exactly/settings', [
+                'settings' => $settings,
+                'plugin' => $plugin,
+            ], craft\web\View::TEMPLATE_MODE_CP);
+        };
+
+        $dirty = $render(false);
+        $clean = $render(true);
+
+        return str_contains($dirty, 'exactly-redirect-warning') && !str_contains($clean, 'exactly-redirect-warning')
+            ?: 'dirty has it: ' . var_export(str_contains($dirty, 'exactly-redirect-warning'), true);
     });
 
     // =====================================================================
@@ -1815,6 +2942,7 @@ try {
     $sameOnPurpose = [
         'Client ID', 'Client secret', 'Exact Online', 'Exactly', 'Endpoint', 'Payload', 'PDF',
         'Peppol', 'Journal', 'Info', 'Status', 'Region', 'Action', 'Document', 'Documents',
+        '{total} documents',
     ];
 
     $translationDir = dirname(__DIR__, 2) . '/src/translations';
@@ -1954,15 +3082,19 @@ try {
     });
 
     check('the log prunes to its retention window', function() use ($plugin) {
+        // Dated in the year 1000 and pruned with a window that reaches only that far back, so the
+        // prune cannot touch anybody else's history in this shared harness.
+        $ancient = new DateTime('1000-01-02 00:00:00');
         Craft::$app->getDb()->createCommand()->insert(Table::LOG, [
             'action' => 'checks.old',
             'level' => LogEntry::LEVEL_INFO,
-            'dateCreated' => Db::prepareDateForDb((new DateTime())->modify('-400 days')),
+            'division' => TEST_DIVISION,
+            'dateCreated' => Db::prepareDateForDb($ancient),
             'dateUpdated' => Db::prepareDateForDb(new DateTime()),
             'uid' => StringHelper::UUID(),
         ])->execute();
 
-        $plugin->getLog()->prune(30);
+        $plugin->getLog()->prune((int)floor((time() - $ancient->getTimestamp()) / 86400) - 1);
 
         return (int)(new craft\db\Query())->from([Table::LOG])->where(['action' => 'checks.old'])->count() === 0;
     });
@@ -1989,6 +3121,14 @@ try {
         }
     }
 
+    foreach ($createdUsers as $fixtureUser) {
+        try {
+            $elements->deleteElement($fixtureUser, true);
+        } catch (Throwable $e) {
+            echo "  ! could not delete user {$fixtureUser->id}: {$e->getMessage()}\n";
+        }
+    }
+
     foreach ($createdProducts as $fixtureProduct) {
         try {
             $elements->deleteElement($fixtureProduct, true);
@@ -1997,9 +3137,17 @@ try {
         }
     }
 
-    foreach ([Table::LOG, Table::ACCOUNTS, Table::ITEMS] as $table) {
+    // Scoped: the fixture division's cache rows, and log rows this run wrote (newer than the
+    // snapshot, and either in the fixture division or division-less). Never a whole table.
+    $scopedDeletes = [
+        Table::ACCOUNTS => ['division' => TEST_DIVISION],
+        Table::ITEMS => ['division' => TEST_DIVISION],
+        Table::LOG => ['and', ['>', 'id', $logIdAtStart], ['or', ['division' => TEST_DIVISION], ['division' => null]]],
+    ];
+
+    foreach ($scopedDeletes as $table => $condition) {
         try {
-            $db->createCommand()->delete($table)->execute();
+            $db->createCommand()->delete($table, $condition)->execute();
         } catch (Throwable $e) {
             echo "  ! could not clear $table: {$e->getMessage()}\n";
         }

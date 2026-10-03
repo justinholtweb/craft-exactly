@@ -7,7 +7,9 @@ use craft\base\Model;
 use craft\base\Plugin as BasePlugin;
 use craft\commerce\elements\Order;
 use craft\commerce\events\OrderStatusEvent;
+use craft\commerce\models\Transaction;
 use craft\commerce\services\OrderHistories;
+use craft\commerce\services\Transactions;
 use craft\events\RegisterUrlRulesEvent;
 use craft\events\RegisterUserPermissionsEvent;
 use craft\services\Gc;
@@ -52,7 +54,7 @@ class Plugin extends BasePlugin
 {
     public const HANDLE = 'exactly';
 
-    public string $schemaVersion = '5.0.0';
+    public string $schemaVersion = '5.0.1';
     public bool $hasCpSettings = true;
     public bool $hasCpSection = true;
 
@@ -204,7 +206,7 @@ class Plugin extends BasePlugin
         $user = Craft::$app->getUser();
         $subNav = [];
 
-        if ($user->checkPermission('exactly-viewDocuments')) {
+        if ($user->checkPermission('exactly-viewDocuments') && $user->checkPermission('commerce-manageOrders')) {
             $subNav['documents'] = [
                 'label' => Craft::t('exactly', 'Documents'),
                 'url' => 'exactly/documents',
@@ -340,7 +342,8 @@ class Plugin extends BasePlugin
     /**
      * The automatic triggers.
      *
-     * All three go through `Sync::handleOrder()`, which queues rather than pushes. Nothing here is
+     * The three invoice triggers go through `Sync::handleOrder()`, and a refund through
+     * `Sync::handleRefund()`; both queue rather than push. Nothing here is
      * allowed to fail an order save — an Exact Online outage must not be able to stop a customer
      * checking out.
      */
@@ -374,6 +377,28 @@ class Plugin extends BasePlugin
 
                 if ($order instanceof Order) {
                     $this->getSync()->handleOrder($order);
+                }
+            }
+        );
+
+        // Refund → credit note. On *every* saved transaction, not Payments' after-refund event:
+        // Commerce transactions are immutable, so a refund a gateway reports as processing and
+        // settles later by webhook (Mollie, for one) arrives as a new success transaction through
+        // saveTransaction() — and never re-fires the after-refund event. A synchronous refund goes
+        // through saveTransaction() too. `handleRefund()` ignores anything that is not a successful
+        // refund, and never throws: the gateway has already refunded.
+        Event::on(
+            Transactions::class,
+            Transactions::EVENT_AFTER_SAVE_TRANSACTION,
+            function(Event $event) {
+                if (!$this->getSettings()->creditNotesOnRefund) {
+                    return;
+                }
+
+                $transaction = $event->transaction ?? null;
+
+                if ($transaction instanceof Transaction) {
+                    $this->getSync()->handleRefund($transaction);
                 }
             }
         );

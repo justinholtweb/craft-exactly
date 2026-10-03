@@ -79,7 +79,9 @@ class Settings extends Model
     /**
      * @var string[]
      */
-    public array $triggerStatusHandles = [];
+    // `array|string` because a checkbox group with nothing ticked posts '' rather than [], and an
+    // `array` property would throw on that before validation ever ran.
+    public array|string $triggerStatusHandles = [];
 
     /**
      * Exact journal code for sales invoices. `70` is the Exact default sales journal.
@@ -116,8 +118,9 @@ class Settings extends Model
     public string $shippingGlAccountCode = '';
 
     /**
-     * Order-level discounts become their own (negative) invoice line. Line-level discounts are
-     * already inside the line price and are never doubled up here.
+     * Discounts become one (negative) invoice line. Commerce keeps both order-level and line-level
+     * discounts out of a line's subtotal, so both land on this one line and nothing is counted
+     * twice. Switched off, the discount is left off the invoice and the push warns about it.
      */
     public bool $includeDiscountLine = true;
     public string $discountItemCode = '';
@@ -170,8 +173,11 @@ class Settings extends Model
     public string $accountStatus = 'C';
 
     /**
-     * Handle of the field carrying the customer's VAT number. Looked for on the order first, then
-     * on its billing address. Craft has no VAT field of its own, so this has to be configured.
+     * Handle of a custom field carrying the customer's VAT number, for stores that collected it
+     * before Craft had a home for it. Optional: the address's built-in Organization Tax ID
+     * (`organizationTaxId`) is always read, from the billing address and then the shipping
+     * address. When set, this field wins — looked for on the order, then the billing and shipping
+     * addresses.
      */
     public string $vatNumberFieldHandle = '';
 
@@ -239,6 +245,19 @@ class Settings extends Model
     public array $vatCodeByTaxRate = [];
 
     /**
+     * Commerce tax categories whose sales are VAT-exempt (medical, education, financial services
+     * and the like). A line in one of these categories that **carried no tax** takes the Exempt
+     * treatment's VAT code instead of the order's treatment. A line that was charged tax keeps
+     * the code for what it was charged — an exempt code there would make Exact's total disagree
+     * with what the customer paid, and reconciliation would refuse it.
+     *
+     * `array|string` because a checkbox group with nothing ticked posts an empty string.
+     *
+     * @var int[]|string
+     */
+    public array|string $exemptTaxCategoryIds = [];
+
+    /**
      * Reverse charge needs a structurally valid VAT number, not merely a non-empty one.
      */
     public bool $requireValidVatNumber = true;
@@ -285,7 +304,10 @@ class Settings extends Model
     public int $maxAttempts = 5;
 
     /**
-     * Minutes to wait before a failed push is retried.
+     * Minutes to wait after a failed attempt before the retry paths (maintenance, `exactly/sync/retry`,
+     * the Retry failures button) pick the document up again. `0` retries at the next run. A push
+     * refused by Exact's rate limit is not counted as an attempt, but still waits this long when it
+     * is left to the retry paths — the queue job re-queues it on Exact's own reset time instead.
      */
     public int $retryDelayMinutes = 15;
 
@@ -358,6 +380,7 @@ class Settings extends Model
             [
                 [
                     'triggerStatusHandles', 'vatCodeByTreatment', 'vatCodeByTaxRate',
+                    'exemptTaxCategoryIds',
                     'glAccountByProductType',
                 ],
                 'safe',
@@ -389,9 +412,19 @@ class Settings extends Model
             return;
         }
 
-        if (!preg_match('~^https://[^\s/]+~i', $value)) {
-            $this->addError($attribute, Craft::t('exactly', 'Enter an https:// URL, or leave this blank to use the region above.'));
+        if (!self::isExactHost($value)) {
+            $this->addError($attribute, Craft::t('exactly', 'Enter an Exact Online https:// address, such as https://start.exactonline.nl, or leave this blank to use the region above.'));
         }
+    }
+
+    /**
+     * Whether a base URL is an Exact Online host. Every request carries the bearer token and the
+     * token refresh carries the client secret, so this is the one setting that decides where those
+     * go — it is pinned to Exact's own domains rather than to "any https URL".
+     */
+    public static function isExactHost(string $url): bool
+    {
+        return (bool)preg_match('~^https://([a-z0-9-]+\.)*exactonline\.[a-z]{2,3}(\.[a-z]{2})?/?$~i', $url);
     }
 
     /**
@@ -418,7 +451,8 @@ class Settings extends Model
     {
         $custom = trim((string)App::parseEnv($this->customBaseUrl));
 
-        if ($custom !== '') {
+        // Checked again here because an environment variable is never seen by validation.
+        if ($custom !== '' && self::isExactHost($custom)) {
             return rtrim($custom, '/');
         }
 
@@ -492,6 +526,21 @@ class Settings extends Model
     }
 
     /**
+     * The Commerce tax category IDs marked VAT-exempt, normalised.
+     *
+     * @return int[]
+     */
+    public function getExemptTaxCategoryIds(): array
+    {
+        $ids = is_array($this->exemptTaxCategoryIds) ? $this->exemptTaxCategoryIds : [];
+
+        return array_values(array_unique(array_filter(
+            array_map('intval', array_filter($ids, 'is_numeric')),
+            static fn(int $id) => $id > 0,
+        )));
+    }
+
+    /**
      * Every treatment that has to be mapped before a push can be trusted.
      *
      * @return string[]
@@ -501,7 +550,8 @@ class Settings extends Model
         $missing = [];
 
         foreach (array_keys(Vat::treatments()) as $treatment) {
-            if ($treatment === Vat::TREATMENT_EXEMPT) {
+            // Exempt only needs a code once some tax category is marked exempt.
+            if ($treatment === Vat::TREATMENT_EXEMPT && $this->getExemptTaxCategoryIds() === []) {
                 continue;
             }
 

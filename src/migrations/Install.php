@@ -62,6 +62,9 @@ class Install extends Migration
             // Rate-limit budget as of the last call, straight off the response headers.
             'dailyLimit' => $this->integer(),
             'dailyRemaining' => $this->integer(),
+            // Epoch milliseconds, from `X-RateLimit-Reset`. Without it an exhausted daily budget
+            // could never be seen to refill.
+            'dailyReset' => $this->bigInteger(),
             'minutelyLimit' => $this->integer(),
             'minutelyRemaining' => $this->integer(),
             'minutelyReset' => $this->bigInteger(),

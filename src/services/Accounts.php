@@ -43,9 +43,14 @@ class Accounts extends Component
         $vatInfo = Plugin::getInstance()->getVat()->getTreatmentForOrder($order);
         $vatNumber = $vatInfo['vatNumber'];
 
+        // A VAT number is typed at checkout and nobody checks that it belongs to the person typing
+        // it, so for a guest it identifies nothing: matching on it would book a stranger's order to
+        // the real company's account. Guests are matched by email or get an account of their own.
+        $vatMatchable = $vatNumber !== '' && $this->isRegisteredCustomer($order);
+
         foreach ($this->matchOrder($settings->accountMatchStrategy) as $strategy) {
             $key = $strategy === 'vat'
-                ? ($vatNumber !== '' ? 'vat:' . $vatNumber : '')
+                ? ($vatMatchable ? 'vat:' . $vatNumber : '')
                 : $email;
 
             if ($key === '') {
@@ -65,7 +70,17 @@ class Accounts extends Component
             if ($remote !== null) {
                 $this->cacheAccount($division, $key, $order, $remote, $vatNumber);
 
-                if ($settings->updateExistingAccounts) {
+                // Only a registered customer's own email is trusted enough to write over an
+                // account that already exists. A guest's email and anyone's VAT number are typed at
+                // checkout and verified by nobody — letting them update an account is how a
+                // stranger who types a real company's VAT number takes that company's account over
+                // in the merchant's books. And a preview writes nothing, whatever the settings say.
+                if (
+                    $allowCreate
+                    && $settings->updateExistingAccounts
+                    && $strategy === 'email'
+                    && $this->isRegisteredCustomer($order)
+                ) {
                     $this->updateAccount((string)$remote['ID'], $order, $vatNumber);
                 }
 
@@ -89,9 +104,9 @@ class Accounts extends Component
         }
 
         $created = $this->createAccount($order, $vatNumber);
-        $key = $email !== '' ? $email : 'vat:' . $vatNumber;
+        $key = $email !== '' ? $email : ($vatMatchable ? 'vat:' . $vatNumber : '');
 
-        if ($key !== '' && $key !== 'vat:') {
+        if ($key !== '') {
             $this->cacheAccount($division, $key, $order, $created, $vatNumber);
         }
 
@@ -100,6 +115,17 @@ class Accounts extends Component
             'code' => Odata::trimCode($created['Code'] ?? null),
             'created' => true,
         ];
+    }
+
+    /**
+     * Whether the order belongs to a customer with a real login, as opposed to a guest checkout —
+     * whose user record Craft 5 creates anyway, inactive and without credentials.
+     */
+    private function isRegisteredCustomer(Order $order): bool
+    {
+        $customer = $order->getCustomer();
+
+        return $customer !== null && $customer->getIsCredentialed();
     }
 
     /**
@@ -204,6 +230,10 @@ class Accounts extends Component
      */
     public function updateAccount(string $accountId, Order $order, string $vatNumber = ''): void
     {
+        if (!Odata::isGuid($accountId)) {
+            throw new ApiException(Craft::t('exactly', 'Exact Online returned an account ID that is not a GUID.'));
+        }
+
         $payload = $this->buildAccountPayload($order, $vatNumber);
 
         // `Status` and `Code` are the merchant's to manage once the account exists. Overwriting

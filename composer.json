@@ -22,8 +22,12 @@
             "homepage": "https://justinholt.com"
         }
     ],
+    "homepage": "https://justinholt.com/plugins/craft-exactly",
     "support": {
-        "email": "justin@justinholt.com"
+        "email": "justin@justinholt.com",
+        "docs": "https://justinholt.com/plugins/craft-exactly/docs",
+        "source": "https://github.com/justinholtweb/craft-exactly",
+        "issues": "https://github.com/justinholtweb/craft-exactly/issues"
     },
     "minimum-stability": "stable",
     "prefer-stable": true,
@@ -49,7 +53,7 @@
         "handle": "exactly",
         "developer": "Justin Holt",
         "developerUrl": "https://justinholt.com",
-        "documentationUrl": "https://github.com/justinholtweb/craft-exactly/blob/main/README.md",
+        "documentationUrl": "https://justinholt.com/plugins/craft-exactly/docs",
         "changelogUrl": "https://raw.githubusercontent.com/justinholtweb/craft-exactly/main/CHANGELOG.md",
         "class": "justinholtweb\\exactly\\Plugin"
     }

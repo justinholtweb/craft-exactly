@@ -9,6 +9,7 @@ use craft\commerce\models\LineItem;
 use craft\helpers\App;
 use DateTime;
 use justinholtweb\exactly\errors\ApiException;
+use justinholtweb\exactly\errors\RateLimitException;
 use justinholtweb\exactly\helpers\Odata;
 use justinholtweb\exactly\helpers\Vat as VatHelper;
 use justinholtweb\exactly\models\Document;
@@ -88,54 +89,38 @@ class Invoices extends Component
             $warnings[] = $treatment['note'];
         }
 
-        $accountId = $options['accountId'] ?? null;
-
-        if ($accountId === null) {
-            $account = $plugin->getAccounts()->resolveForOrder($order, $allowCreate);
-            $accountId = $account['id'] !== '' ? $account['id'] : null;
-
-            if ($accountId === null) {
-                $warnings[] = Craft::t('exactly', 'No Exact Online account matches this customer yet; one will be created when the invoice is sent.');
-            }
-        }
-
+        // Two phases, and the order matters. First the arithmetic — amounts, VAT codes and the
+        // reconciliation verdict — which reads from Exact but never writes. Only once the total is
+        // known to be right are the customer's account and the items resolved, because resolving
+        // them may *create* them in Exact: an order refused for a VAT gap must not leave a new
+        // customer or item behind in the administration.
         $vatPercentages = $this->getVatPercentages();
-        $lines = [];
+        $specs = [];
         $lineExVatTotal = 0.0;
         $lineIncludedTax = 0.0;
         $expectedVat = 0.0;
         $vatUnknown = false;
 
         foreach ($order->getLineItems() as $lineItem) {
-            $qty = (float)$lineItem->qty;
             $includedTax = (float)$lineItem->getTaxIncluded();
             $exVat = (float)$lineItem->getSubtotal() - $includedTax;
 
             $lineIncludedTax += $includedTax;
             $lineExVatTotal += $exVat;
 
-            $item = $plugin->getItems()->resolveForLineItem($lineItem, $allowCreate);
-
-            if ($item['fallback'] && $settings->itemStrategy === 'sku') {
-                $warnings[] = Craft::t('exactly', 'SKU “{sku}” is not in Exact Online; it will be invoiced against the fallback item.', [
-                    'sku' => $lineItem->getSku(),
-                ]);
-            }
-
             $vatCode = $plugin->getVat()->getVatCodeForLine($order, $treatment['treatment'], $lineItem);
             [$vat, $known] = $this->predictVat($exVat, $vatCode, $vatPercentages);
             $expectedVat += $vat;
             $vatUnknown = $vatUnknown || !$known;
 
-            $lines[] = $this->buildLine(
-                itemId: $item['id'],
-                description: $this->lineDescription($order, $lineItem),
-                quantity: $qty,
-                amountExVat: $exVat,
-                vatCode: $vatCode,
-                glAccountId: $plugin->getItems()->resolveGlAccountId($lineItem),
-                settings: $settings,
-            );
+            $specs[] = [
+                'lineItem' => $lineItem,
+                'description' => $this->lineDescription($order, $lineItem),
+                'quantity' => (float)$lineItem->qty,
+                'amountExVat' => $exVat,
+                'vatCode' => $vatCode,
+                'glAccountId' => $plugin->getItems()->resolveGlAccountId($lineItem),
+            ];
         }
 
         // Included tax that belongs to no line — shipping, and any order-level charge Commerce
@@ -150,15 +135,14 @@ class Invoices extends Component
             $expectedVat += $vat;
             $vatUnknown = $vatUnknown || !$known;
 
-            $lines[] = $this->buildLine(
-                itemId: $this->resolveConfiguredItem($settings->shippingItemCode, Craft::t('exactly', 'shipping')),
-                description: Craft::t('exactly', 'Shipping'),
-                quantity: 1.0,
-                amountExVat: $shippingExVat,
-                vatCode: $vatCode,
-                glAccountId: $plugin->getLedger()->resolveAccountId($settings->shippingGlAccountCode),
-                settings: $settings,
-            );
+            $specs[] = [
+                'configuredItem' => [$settings->shippingItemCode, Craft::t('exactly', 'shipping')],
+                'description' => Craft::t('exactly', 'Shipping'),
+                'quantity' => 1.0,
+                'amountExVat' => $shippingExVat,
+                'vatCode' => $vatCode,
+                'glAccountId' => $plugin->getLedger()->resolveAccountId($settings->shippingGlAccountCode),
+            ];
         } elseif (!$settings->includeShippingLine && abs($shippingExVat) >= 0.005) {
             $warnings[] = Craft::t('exactly', 'This order has {amount} of shipping, but shipping lines are switched off.', [
                 'amount' => $this->money($shippingExVat, $order),
@@ -174,15 +158,14 @@ class Invoices extends Component
             $expectedVat += $vat;
             $vatUnknown = $vatUnknown || !$known;
 
-            $lines[] = $this->buildLine(
-                itemId: $this->resolveConfiguredItem($settings->discountItemCode, Craft::t('exactly', 'discount')),
-                description: $this->discountDescription($order),
-                quantity: 1.0,
-                amountExVat: $discount,
-                vatCode: $vatCode,
-                glAccountId: $plugin->getLedger()->resolveAccountId($settings->discountGlAccountCode),
-                settings: $settings,
-            );
+            $specs[] = [
+                'configuredItem' => [$settings->discountItemCode, Craft::t('exactly', 'discount')],
+                'description' => $this->discountDescription($order),
+                'quantity' => 1.0,
+                'amountExVat' => $discount,
+                'vatCode' => $vatCode,
+                'glAccountId' => $plugin->getLedger()->resolveAccountId($settings->discountGlAccountCode),
+            ];
         } elseif (!$settings->includeDiscountLine && abs($discount) >= 0.005) {
             $warnings[] = Craft::t('exactly', 'This order has {amount} of discount, but discount lines are switched off.', [
                 'amount' => $this->money($discount, $order),
@@ -198,23 +181,23 @@ class Invoices extends Component
             $warnings[] = Craft::t('exactly', 'At least one VAT code’s rate could not be read from Exact Online, so the invoice total was not reconciled against the order total.');
         } elseif (abs($delta) >= 0.005) {
             if ($settings->roundingTolerance > 0 && abs($delta) <= $settings->roundingTolerance) {
-                $lines[] = $this->buildLine(
-                    itemId: $this->resolveConfiguredItem($settings->roundingItemCode, Craft::t('exactly', 'rounding')),
-                    description: Craft::t('exactly', 'Rounding difference'),
-                    quantity: 1.0,
-                    amountExVat: $delta,
+                $specs[] = [
+                    'configuredItem' => [$settings->roundingItemCode, Craft::t('exactly', 'rounding')],
+                    'description' => Craft::t('exactly', 'Rounding difference'),
+                    'quantity' => 1.0,
+                    'amountExVat' => $delta,
                     // Must be a 0% code: a rounding line that attracts VAT moves the total by the
                     // delta *plus* VAT and never lands on the right number.
-                    vatCode: trim($settings->roundingVatCode) !== '' ? trim($settings->roundingVatCode) : null,
-                    glAccountId: $plugin->getLedger()->resolveAccountId($settings->roundingGlAccountCode),
-                    settings: $settings,
-                );
+                    'vatCode' => trim($settings->roundingVatCode) !== '' ? trim($settings->roundingVatCode) : null,
+                    'glAccountId' => $plugin->getLedger()->resolveAccountId($settings->roundingGlAccountCode),
+                ];
 
                 $warnings[] = Craft::t('exactly', 'A {amount} rounding line was added so the invoice totals {total}.', [
                     'amount' => $this->money($delta, $order),
                     'total' => $this->money($chargedTotal, $order),
                 ]);
             } elseif ($settings->roundingTolerance > 0) {
+                // Refused before anything below has had the chance to create an account or item.
                 throw new ApiException(Craft::t('exactly', 'Exact Online would invoice {expected} but the customer paid {charged}. That is more than the rounding tolerance, so nothing was sent — check the VAT code mapping for this order’s treatment ({treatment}).', [
                     'expected' => $this->money($expectedTotal, $order),
                     'charged' => $this->money($chargedTotal, $order),
@@ -228,8 +211,67 @@ class Invoices extends Component
             }
         }
 
-        if ($lines === []) {
+        if ($specs === []) {
             throw new ApiException(Craft::t('exactly', 'This order has nothing to invoice.'));
+        }
+
+        // Phase two: the total is right, so the items and the account may now be resolved — and,
+        // when allowed, created. Cheapest-to-fail first: the configured shipping, discount and
+        // rounding items are read-only lookups that throw on a code missing from Exact, so they
+        // go before anything that can create; the account, the likeliest create, goes last.
+        foreach ($specs as $index => $spec) {
+            if (isset($spec['configuredItem'])) {
+                $specs[$index]['itemId'] = $this->resolveConfiguredItem(...$spec['configuredItem']);
+            }
+        }
+
+        $lines = [];
+
+        foreach ($specs as $spec) {
+            if (isset($spec['lineItem'])) {
+                $item = $plugin->getItems()->resolveForLineItem($spec['lineItem'], $allowCreate);
+
+                if (!empty($item['pending'])) {
+                    $warnings[] = Craft::t('exactly', 'SKU “{sku}” is not in Exact Online yet. An item will be created for it when the invoice is sent, so this preview has no item on that line.', [
+                        'sku' => $spec['lineItem']->getSku(),
+                    ]);
+                } elseif ($item['fallback'] && $settings->itemStrategy === 'sku') {
+                    $warnings[] = Craft::t('exactly', 'SKU “{sku}” is not in Exact Online; it will be invoiced against the fallback item.', [
+                        'sku' => $spec['lineItem']->getSku(),
+                    ]);
+                }
+
+                $itemId = $item['id'];
+            } else {
+                $itemId = $spec['itemId'];
+            }
+
+            $lines[] = $this->buildLine(
+                itemId: $itemId,
+                description: $spec['description'],
+                quantity: $spec['quantity'],
+                amountExVat: $spec['amountExVat'],
+                vatCode: $spec['vatCode'],
+                glAccountId: $spec['glAccountId'],
+                settings: $settings,
+            );
+        }
+
+        $accountId = $options['accountId'] ?? null;
+
+        if ($accountId === null) {
+            $account = $plugin->getAccounts()->resolveForOrder($order, $allowCreate);
+            $accountId = $account['id'] !== '' ? $account['id'] : null;
+
+            if ($accountId === null) {
+                // Only a preview gets here (a send creates the account or throws), so say which:
+                // the payload above has no `OrderedBy` either way.
+                $warnings[] = $settings->createMissingAccounts
+                    ? Craft::t('exactly', 'No Exact Online account matches this customer yet; one will be created when the invoice is sent.')
+                    : Craft::t('exactly', 'No Exact Online account matches {email}, and creating accounts is switched off.', [
+                        'email' => (string)$order->getEmail() ?: Craft::t('exactly', 'this customer'),
+                    ]);
+            }
         }
 
         if ($kind === Document::KIND_CREDIT_NOTE && $settings->creditNoteSign === 'negative') {
@@ -306,6 +348,11 @@ class Invoices extends Component
     /**
      * Send an order to Exact Online.
      *
+     * Every failure comes back in the result except a rate limit, which is thrown so the caller
+     * can wait and come back: the queue job re-queues on it, and the CP and console say how long.
+     * The claim is released first, so the row is `failed` (attempt not counted), never `sending`.
+     *
+     * @throws RateLimitException
      * @return array{
      *     success: bool,
      *     document: Document|null,
@@ -342,11 +389,10 @@ class Invoices extends Component
         }
 
         try {
-            $account = $plugin->getAccounts()->resolveForOrder($order);
-            $built = $this->buildPayload($order, [
-                'kind' => $kind,
-                'accountId' => $account['id'],
-            ]);
+            // The account is resolved inside buildPayload(), after the total has been reconciled,
+            // so a refused order writes nothing to Exact — not even a new customer.
+            $built = $this->buildPayload($order, ['kind' => $kind]);
+            $accountId = $built['payload']['OrderedBy'] ?? null;
 
             $created = $plugin->getApi()->post(self::ENDPOINT, $built['payload'], [
                 'action' => $kind === Document::KIND_CREDIT_NOTE ? 'invoices.credit' : 'invoices.push',
@@ -363,7 +409,7 @@ class Invoices extends Component
 
             $document = $plugin->getDocuments()->markSent($document, $created, $built['payload'], $built['hash'], [
                 'vatTreatment' => $built['treatment']['treatment'],
-                'exactAccountId' => $account['id'] ?: null,
+                'exactAccountId' => $accountId ?: null,
             ]);
 
             $warnings = $built['warnings'];
@@ -391,11 +437,30 @@ class Invoices extends Component
                 'warnings' => $warnings,
                 'skipped' => false,
             ];
+        } catch (RateLimitException $e) {
+            // Not a failure of this order: Exact refused the call before anything was created
+            // (delivery, the only call after the invoice exists, swallows its own errors). Give the
+            // claim back without spending an attempt — leaving it `sending` would block every
+            // retry for the staleness window — and let the caller decide when to come back: the
+            // queue job re-queues itself, a person is told how long to wait.
+            $plugin->getDocuments()->release($document, Document::STATUS_FAILED, $e->getMessage());
+
+            throw $e;
         } catch (\Throwable $e) {
             $document = $plugin->getDocuments()->markFailed($document, $e->getMessage());
 
             return $this->failure($document, $e->getMessage());
         }
+    }
+
+    /**
+     * What to tell a person whose push hit Exact's rate limit.
+     */
+    public static function rateLimitMessage(RateLimitException $e): string
+    {
+        return Craft::t('exactly', 'Exact Online is rate limiting this administration, so nothing was sent. Try again in {seconds} seconds.', [
+            'seconds' => $e->retryAfter,
+        ]);
     }
 
     // Delivery
