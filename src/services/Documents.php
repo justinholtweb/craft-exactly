@@ -367,7 +367,8 @@ class Documents extends Component
      *
      * Never a `sent` row, and never a `sending` row that is still within the staleness window: a
      * worker may be waiting on Exact for it right now, and a `queued` row is one a new job may
-     * claim — which would POST a second invoice beside the first. Like `claim()`, the answer is the
+     * claim — which would POST a second invoice beside the first. Nor a `queued` row within that
+     * window: it already has its job. Like `claim()`, the answer is the
      * affected-row count of one conditional `UPDATE`, so there is no read-then-write gap.
      *
      * @param string|null $expectedStatus only transition from exactly this status
@@ -389,8 +390,19 @@ class Documents extends Component
             ['or', ['dateLastAttempt' => null], ['<', 'dateLastAttempt', $staleCutoff]],
         ];
 
+        // A `queued` row already has a job on its way, so it is refused like an in-flight one,
+        // until it has sat there long enough that its job was plainly lost. Re-marking a fresh
+        // `queued` row would write the values it already holds, and MySQL counts that as zero
+        // affected rows inside the same second and one outside it: the answer must not depend
+        // on the clock.
+        $staleQueued = [
+            'and',
+            ['status' => Document::STATUS_QUEUED],
+            ['<', 'dateUpdated', $staleCutoff],
+        ];
+
         $condition = match ($expectedStatus) {
-            null => ['or', ['not in', 'status', [Document::STATUS_SENT, Document::STATUS_SENDING]], $staleSending],
+            null => ['or', ['not in', 'status', [Document::STATUS_SENT, Document::STATUS_SENDING, Document::STATUS_QUEUED]], $staleSending, $staleQueued],
             Document::STATUS_SENDING => $staleSending,
             default => ['status' => $expectedStatus],
         };
@@ -417,6 +429,10 @@ class Documents extends Component
             return $fresh->kind === Document::KIND_CREDIT_NOTE
                 ? Craft::t('exactly', 'This order already has credit note {number} in Exact Online.', ['number' => $number])
                 : Craft::t('exactly', 'This order is already invoice {number} in Exact Online.', ['number' => $number]);
+        }
+
+        if ($fresh->status === Document::STATUS_QUEUED) {
+            return Craft::t('exactly', 'This order is already queued for Exact Online.');
         }
 
         return Craft::t('exactly', 'Another process is sending this order to Exact Online right now.');

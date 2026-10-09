@@ -44,6 +44,7 @@ return [
     'Another process claimed this order first.' => 'Another process claimed this order first.',
     'Another process claimed this payment first.' => 'Another process claimed this payment first.',
     'Another process is entering this payment right now.' => 'Another process is entering this payment right now.',
+    'This order is already queued for Exact Online.' => 'This order is already queued for Exact Online.',
     'Another process is sending this order to Exact Online right now.' => 'Another process is sending this order to Exact Online right now.',
     'As soon as the order completes' => 'As soon as the order completes',
     'Asking VIES…' => 'Asking VIES…',

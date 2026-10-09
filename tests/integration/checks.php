@@ -2202,6 +2202,52 @@ try {
             && $plugin->getDocuments()->getDocumentById($claim['document']->id)?->status === Document::STATUS_QUEUED;
     });
 
+    // A fresh `queued` row re-marked `queued` writes the values it already holds: MySQL reports
+    // zero affected rows inside the same second and one outside it. The answer must not depend on
+    // the clock — a queued row already has its job, so it is refused either way.
+    check('a fresh queued row is refused the same whether or not a second has passed', function() use ($plugin, $variantA, $suffix) {
+        $documents = $plugin->getDocuments();
+        $answers = [];
+
+        foreach (['same second' => 0, 'ten seconds later' => -10] as $label => $offset) {
+            $order = makeOrder([['variant' => $variantA, 'qty' => 1]], ['email' => "queued-twice-$offset-$suffix@example.com"]);
+            $claim = $documents->claim($order, TEST_DIVISION);
+            $documents->markFailed($claim['document'], 'Refused');
+            $failed = $documents->getDocumentById($claim['document']->id);
+            $first = $documents->markQueued($failed);
+
+            if ($offset !== 0) {
+                Craft::$app->getDb()->createCommand()->update(Table::DOCUMENTS, [
+                    'dateUpdated' => Db::prepareDateForDb((new DateTime())->modify("$offset seconds")),
+                ], ['id' => $failed->id])->execute();
+            }
+
+            $queued = $documents->getDocumentById($failed->id);
+            $answers[$label] = [$first, $documents->markQueued($queued), $documents->queueRefusal($queued)];
+        }
+
+        foreach ($answers as $answer) {
+            if ($answer !== [true, false, 'This order is already queued for Exact Online.']) {
+                return json_encode($answers);
+            }
+        }
+
+        return true;
+    });
+
+    check('a queued row left past the staleness window (its job was lost) can be queued again', function() use ($plugin, $variantA, $suffix) {
+        $documents = $plugin->getDocuments();
+        $order = makeOrder([['variant' => $variantA, 'qty' => 1]], ['email' => "queued-lost-$suffix@example.com"]);
+        $claim = $documents->claim($order, TEST_DIVISION);
+        Craft::$app->getDb()->createCommand()->update(Table::DOCUMENTS, [
+            'status' => Document::STATUS_QUEUED,
+            'dateUpdated' => Db::prepareDateForDb((new DateTime())->modify('-' . (\justinholtweb\exactly\services\Documents::STALE_ATTEMPT_MINUTES + 5) . ' minutes')),
+        ], ['id' => $claim['document']->id])->execute();
+
+        return $documents->markQueued($documents->getDocumentById($claim['document']->id))
+            && $documents->getDocumentById($claim['document']->id)?->status === Document::STATUS_QUEUED;
+    });
+
     check('a rate-limit re-queue does not push a second job for a row someone else now holds', function() use ($plugin, $variantA, $suffix, $ourJobs) {
         $order = makeOrder([['variant' => $variantA, 'qty' => 1]], ['email' => "requeue-held-$suffix@example.com"]);
         $plugin->getDocuments()->claim($order, TEST_DIVISION);

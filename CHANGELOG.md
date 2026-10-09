@@ -43,6 +43,11 @@
 
 ### Fixed
 
+- **Queue it**, **Send to Exact Online** and a second refund now treat an order that is already
+  `queued` the same every time: it already has its job, so it is skipped with "This order is
+  already queued for Exact Online." Before, the answer depended on the clock — inside the same
+  second it was refused as "Another process is sending this order", a second later a duplicate job
+  was pushed. A `queued` row older than 15 minutes (its job was lost) can still be queued again.
 - The settings screen's buttons — **Test connection**, **List administrations**, **Disconnect**,
   **Clear cached lookups** and the VIES check — did nothing: Craft prefixes every id on a plugin
   settings screen with `settings-`, and the script looked them up without it.

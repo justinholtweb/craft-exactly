@@ -44,6 +44,7 @@ return [
     'Another process claimed this order first.' => 'Otro proceso ha tomado este pedido antes.',
     'Another process claimed this payment first.' => 'Otro proceso ha tomado este pago antes.',
     'Another process is entering this payment right now.' => 'Otro proceso está contabilizando este pago en este momento.',
+    'This order is already queued for Exact Online.' => 'Este pedido ya está en la cola para Exact Online.',
     'Another process is sending this order to Exact Online right now.' => 'Otro proceso está enviando este pedido a Exact Online en este momento.',
     'As soon as the order completes' => 'En cuanto se complete el pedido',
     'Asking VIES…' => 'Consultando VIES…',

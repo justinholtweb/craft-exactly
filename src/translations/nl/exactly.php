@@ -45,6 +45,7 @@ return [
     'Another process claimed this order first.' => 'Een ander proces was eerder bij deze order.',
     'Another process claimed this payment first.' => 'Een ander proces was eerder bij deze betaling.',
     'Another process is entering this payment right now.' => 'Een ander proces is deze betaling op dit moment aan het boeken.',
+    'This order is already queued for Exact Online.' => 'Deze order staat al in de wachtrij voor Exact Online.',
     'Another process is sending this order to Exact Online right now.' => 'Een ander proces is deze order op dit moment naar Exact Online aan het sturen.',
     'As soon as the order completes' => 'Zodra de order is afgerond',
     'Asking VIES…' => 'VIES wordt geraadpleegd…',
