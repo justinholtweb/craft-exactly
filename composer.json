@@ -1,7 +1,7 @@
 {
     "name": "justinholtweb/craft-exactly",
     "description": "Exact Online integration for Craft Commerce — turn orders into sales invoices in your Exact Online administration, with EU VAT determination, Peppol delivery and a log of every call.",
-    "version": "5.0.0",
+    "version": "5.1.0",
     "type": "craft-plugin",
     "keywords": [
         "craftcms",

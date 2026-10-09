@@ -1,7 +1,6 @@
 # Changelog
 
-## Unreleased
-
+## 5.1.0 — 2026-10-09
 ### Added
 
 - **Payment entries.** With **Enter payments in Exact** on, every successful capture or purchase is
