@@ -1,0 +1,77 @@
+{# The Dashboard tile. `overview` comes from Alerts::overview(). #}
+{% set counts = overview.counts %}
+{% set payments = overview.payments %}
+
+{% if not overview.connected %}
+    <p class="error">{{ 'Exactly is not connected to Exact Online.'|t('exactly') }}
+        {% if currentUser and currentUser.admin %}<a href="{{ cpUrl('settings/plugins/exactly') }}">{{ 'Connect'|t('exactly') }}</a>{% endif %}
+    </p>
+{% elseif overview.daysLeft is not null and overview.daysLeft < 7 %}
+    <p class="warning">{{ 'The Exact Online connection expires in {days} days unless it is used.'|t('exactly', { days: overview.daysLeft }) }}</p>
+{% endif %}
+
+{% for incident in overview.incidents %}
+    <p class="error" title="{{ incident.detail }}">{{ incident.label }}</p>
+{% endfor %}
+
+<table class="data fullwidth">
+    <tbody>
+        <tr>
+            <th scope="row">{{ 'Sent'|t('exactly') }}</th>
+            <td>{{ (counts.sent ?? 0)|number }}</td>
+        </tr>
+        <tr>
+            <th scope="row">{{ 'Failed'|t('exactly') }}</th>
+            <td>
+                {% if counts.failed ?? 0 %}
+                    {% if canSeeDocuments %}
+                        <a href="{{ cpUrl('exactly/documents', { status: 'failed' }) }}" class="error">{{ counts.failed|number }}</a>
+                    {% else %}
+                        <span class="error">{{ counts.failed|number }}</span>
+                    {% endif %}
+                {% else %}
+                    <span class="light">0</span>
+                {% endif %}
+            </td>
+        </tr>
+        <tr>
+            <th scope="row">{{ 'Queued or sending'|t('exactly') }}</th>
+            <td>{{ ((counts.queued ?? 0) + (counts.sending ?? 0))|number }}</td>
+        </tr>
+        <tr>
+            <th scope="row">{{ 'Orders not invoiced'|t('exactly') }}</th>
+            <td>{{ overview.uninvoiced|number }}{{ overview.uninvoiced >= 1000 ? '+' : '' }}</td>
+        </tr>
+        {% if payments|length %}
+            <tr>
+                <th scope="row">{{ 'Payments entered'|t('exactly') }}</th>
+                <td>{{ (payments.sent ?? 0)|number }}</td>
+            </tr>
+            <tr>
+                <th scope="row">{{ 'Payments failed or waiting'|t('exactly') }}</th>
+                <td>
+                    {% set unsent = (payments.failed ?? 0) + (payments.waiting ?? 0) %}
+                    {% if unsent and canSeeDocuments %}
+                        <a href="{{ cpUrl('exactly/payments') }}"{% if payments.failed ?? 0 %} class="error"{% endif %}>{{ unsent|number }}</a>
+                    {% else %}
+                        {{ unsent|number }}
+                    {% endif %}
+                </td>
+            </tr>
+        {% endif %}
+        <tr>
+            <th scope="row">{{ 'Last invoice'|t('exactly') }}</th>
+            <td>
+                {% if overview.lastSent %}
+                    {{ date(overview.lastSent ~ ' UTC')|timestamp('short') }}
+                {% else %}
+                    <span class="light">{{ 'Never'|t('exactly') }}</span>
+                {% endif %}
+            </td>
+        </tr>
+    </tbody>
+</table>
+
+{% if canSeeDocuments %}
+    <p><a href="{{ cpUrl('exactly/documents') }}">{{ 'Open the Documents screen'|t('exactly') }}</a></p>
+{% endif %}

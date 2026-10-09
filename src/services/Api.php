@@ -5,6 +5,7 @@ namespace justinholtweb\exactly\services;
 use Craft;
 use craft\base\Component;
 use craft\helpers\Json;
+use GuzzleHttp\ClientInterface;
 use GuzzleHttp\Exception\RequestException;
 use justinholtweb\exactly\errors\ApiException;
 use justinholtweb\exactly\errors\RateLimitException;
@@ -46,6 +47,13 @@ class Api extends Component
      * lines regularly takes several seconds.
      */
     public int $timeout = 30;
+
+    /**
+     * The HTTP client. Null means Craft's own (`Craft::createGuzzleClient()`); the test suite puts
+     * a Guzzle `MockHandler` client here, so the real request, retry and logging code runs against
+     * a scripted Exact rather than a live division.
+     */
+    public ?ClientInterface $client = null;
 
     // Verbs
     // -------------------------------------------------------------------------
@@ -185,7 +193,7 @@ class Api extends Component
         }
 
         try {
-            $client = Craft::createGuzzleClient();
+            $client = $this->client ?? Craft::createGuzzleClient();
             $response = $client->request($method, $url, $options);
 
             $this->recordRateLimits($response);
@@ -204,6 +212,9 @@ class Api extends Component
                 'request' => $encodedBody,
                 'response' => $responseBody,
             ]);
+
+            // Any authenticated 2xx is the evidence that clears an authentication alert.
+            $plugin->getAlerts()->noteAuthSuccess();
 
             if ($decoded === null) {
                 return null;
@@ -238,12 +249,19 @@ class Api extends Component
                 ]);
 
                 try {
-                    $oauth->refresh();
+                    $oauth->refresh($token);
                 } catch (\Throwable $refreshError) {
                     throw new ApiException($refreshError->getMessage(), 401, $responseBody, $reason, $refreshError);
                 }
 
                 return $this->request($method, $endpoint, $body, $params, $context, $raw, true);
+            }
+
+            // Still refused with a freshly refreshed token: the token is fine and the grant behind
+            // it is not (revoked, or the app's access to this division withdrawn). Somebody has to
+            // reconnect, and nothing else will say so.
+            if ($status === 401) {
+                $plugin->getAlerts()->noteAuthFailure(Craft::t('exactly', 'Exact Online answered 401 to a freshly refreshed token: {message}', ['message' => $message]));
             }
 
             $plugin->getLog()->write($action, [

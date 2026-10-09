@@ -338,6 +338,124 @@ class Settings extends Model
      */
     public string $paidStatusHandle = '';
 
+    // Payment entries
+    // -------------------------------------------------------------------------
+
+    /**
+     * Post each successful capture or purchase to Exact as a bank (or cash) entry line matched to
+     * its invoice, and each refund matched to its credit note — so the receivable is settled in
+     * Exact rather than by a bookkeeper matching every Stripe or Mollie payout by hand.
+     *
+     * Off by default: it writes to the books, and it needs a journal and a receivables account.
+     */
+    public bool $registerPayments = false;
+
+    /**
+     * `bank` posts to `financialtransaction/BankEntries` (bank and payment-service journals, which
+     * is what a PSP clearing journal is), `cash` to `financialtransaction/CashEntries`.
+     */
+    public string $paymentEntryType = 'bank';
+
+    /**
+     * The Exact journal code payments are entered in when their gateway has none of its own.
+     */
+    public string $paymentJournalCode = '';
+
+    /**
+     * Commerce gateway handle => Exact journal code. Stripe pays out to one clearing journal,
+     * PayPal holds a balance of its own: one journal for all of them makes every bank
+     * reconciliation a manual transfer.
+     *
+     * @var array<string, string>
+     */
+    public array $paymentJournalByGateway = [];
+
+    /**
+     * Ledger code of the receivables (debtors) control account the payment line is booked on —
+     * `1300` in most Dutch charts. `GLAccount` is mandatory on an entry line; with `Account` and
+     * `OurRef` (the invoice number) beside it, Exact matches the line to the open invoice.
+     */
+    public string $paymentReceivablesGlAccountCode = '';
+
+    /**
+     * Whether money received is a positive or a negative entry line.
+     *
+     * Exact's field reference says only that the opening balance plus all lines makes the closing
+     * balance, which reads as "money in is positive" — and that is the default. Like
+     * `creditNoteSign`, it was not confirmed against a second independent implementation, so it is
+     * a switch rather than an assumption: if payments come out doubling the receivable instead of
+     * settling it, this is the one to change. Refunds and fees always take the opposite sign.
+     */
+    public string $paymentAmountSign = 'positive';
+
+    /**
+     * Also enter refunds, matched to the order's credit note. A refund with no credit note to
+     * match (a partial refund, or credit notes switched off) is skipped with the reason.
+     */
+    public bool $registerRefunds = true;
+
+    /**
+     * Book the payment processor's fee as a second line on the same entry, so the entry nets to
+     * what actually reached the bank. Read from the gateway's stored response (Stripe's balance
+     * transaction, PayPal's `seller_receivable_breakdown`, PayPal NVP `FEEAMT`) or supplied by a
+     * handler on `PaymentEntries::EVENT_DEFINE_PROCESSOR_FEE`.
+     *
+     * Off by default: a store that already books its fees from the payout report would count them
+     * twice.
+     */
+    public bool $recordProcessorFees = false;
+
+    /**
+     * Ledger code of the account fees are booked on (bank charges). Required for fees to be sent.
+     */
+    public string $paymentFeeGlAccountCode = '';
+
+    // Alerts
+    // -------------------------------------------------------------------------
+    // Nothing here is `required`: an empty recipient list and an empty webhook URL simply mean
+    // nobody is told, and a fresh install must be able to save every other setting.
+
+    /** Comma- or newline-separated addresses, or an `$ENV` reference that resolves to them. */
+    public string $alertRecipients = '';
+
+    /** A Slack or Teams incoming-webhook URL (or `$ENV`). Sent through the SSRF guard. */
+    public string $alertWebhookUrl = '';
+
+    /** `slack`, `teams` or `json` — the shape of the webhook body. */
+    public string $alertWebhookFormat = 'slack';
+
+    /** Optional. When set, the webhook carries an `X-Exactly-Signature` HMAC of its body. */
+    public string $alertWebhookSecret = '';
+
+    /** Invoices, credit notes or payment entries failing. */
+    public bool $alertOnFailures = true;
+
+    /**
+     * This many failures inside the window opens the incident. One by default: every failure is an
+     * order that is not in the books.
+     */
+    public int $alertFailureThreshold = 1;
+
+    /** The window failures are counted in, in minutes. */
+    public int $alertWindowMinutes = 60;
+
+    /** Work sitting in the queue, or recent orders with no invoice, past `alertStallHours`. */
+    public bool $alertOnStall = true;
+
+    public int $alertStallHours = 6;
+
+    /** Exact refusing the refresh token, a 401 that refreshing did not fix, or an expired connection. */
+    public bool $alertOnAuthFailure = true;
+
+    /** An incident that reopens this soon after its recovery message waits out the rest. */
+    public int $alertCooldownMinutes = 60;
+
+    /**
+     * Config-file only: let the alert webhook reach private, loopback and link-local hosts (a
+     * self-hosted Mattermost on the LAN). The scheme and no-redirect rules still hold.
+     */
+    public bool $allowPrivateAlertWebhookHosts = false;
+
     // Logging
     // -------------------------------------------------------------------------
 
@@ -370,7 +488,18 @@ class Settings extends Model
             [['orderNumberSource'], 'in', 'range' => ['reference', 'number', 'shortNumber', 'id']],
             [['accountMatchStrategy'], 'in', 'range' => ['email', 'vat', 'emailThenVat', 'vatThenEmail']],
             [['itemStrategy'], 'in', 'range' => ['sku', 'fallback']],
-            [['creditNoteSign'], 'in', 'range' => ['positive', 'negative']],
+            [['creditNoteSign', 'paymentAmountSign'], 'in', 'range' => ['positive', 'negative']],
+            [['paymentEntryType'], 'in', 'range' => ['bank', 'cash']],
+            [['registerPayments', 'registerRefunds', 'recordProcessorFees', 'alertOnFailures', 'alertOnStall', 'alertOnAuthFailure', 'allowPrivateAlertWebhookHosts'], 'boolean'],
+            [['alertFailureThreshold'], 'integer', 'min' => 1, 'max' => 10000],
+            [['alertWindowMinutes'], 'integer', 'min' => 5, 'max' => 10080],
+            [['alertStallHours'], 'integer', 'min' => 1, 'max' => 168],
+            [['alertCooldownMinutes'], 'integer', 'min' => 0, 'max' => 10080],
+            [['alertWebhookFormat'], 'in', 'range' => ['slack', 'teams', 'json']],
+            [['alertRecipients', 'alertWebhookUrl', 'alertWebhookSecret'], 'string', 'max' => 2000],
+            [['alertRecipients'], 'validateRecipients'],
+            [['alertWebhookUrl'], 'validateWebhookUrl'],
+            [['paymentJournalCode', 'paymentReceivablesGlAccountCode', 'paymentFeeGlAccountCode'], 'string', 'max' => 64],
             [['deliveryMode'], 'in', 'range' => ['none', 'account', 'email', 'postbox', 'peppol']],
             [['accountStatus'], 'in', 'range' => ['A', 'S', 'P', 'C']],
             [['sellerCountry'], 'match', 'pattern' => '/^[A-Za-z]{0,2}$/'],
@@ -381,7 +510,7 @@ class Settings extends Model
                 [
                     'triggerStatusHandles', 'vatCodeByTreatment', 'vatCodeByTaxRate',
                     'exemptTaxCategoryIds',
-                    'glAccountByProductType',
+                    'glAccountByProductType', 'paymentJournalByGateway',
                 ],
                 'safe',
             ],
@@ -442,6 +571,69 @@ class Settings extends Model
         if (!\justinholtweb\exactly\helpers\Odata::isGuid($value)) {
             $this->addError($attribute, Craft::t('exactly', 'This has to be an Exact layout ID (a GUID), not a name.'));
         }
+    }
+
+    /**
+     * Every address must be one, when there are any. An `$ENV` reference that is not set yet is
+     * allowed — a staging site legitimately has no recipients.
+     */
+    public function validateRecipients(string $attribute): void
+    {
+        foreach ($this->recipientList(false) as $address) {
+            if (filter_var($address, FILTER_VALIDATE_EMAIL) === false) {
+                $this->addError($attribute, Craft::t('exactly', '“{address}” is not an email address.', ['address' => $address]));
+            }
+        }
+    }
+
+    /**
+     * Only the shape is checked here. Where the host resolves is checked at send time, every time,
+     * because DNS can change between a save and a send.
+     */
+    public function validateWebhookUrl(string $attribute): void
+    {
+        $url = trim((string)App::parseEnv($this->alertWebhookUrl));
+
+        if ($url === '' || str_starts_with($url, '$')) {
+            return;
+        }
+
+        $scheme = strtolower((string)parse_url($url, PHP_URL_SCHEME));
+
+        if (!in_array($scheme, ['http', 'https'], true) || !parse_url($url, PHP_URL_HOST)) {
+            $this->addError($attribute, Craft::t('exactly', 'Only http:// and https:// webhook URLs are allowed.'));
+        }
+    }
+
+    /**
+     * The alert recipients, with `$ENV` resolved.
+     *
+     * @return string[]
+     */
+    public function recipientList(bool $validOnly = true): array
+    {
+        $raw = trim((string)App::parseEnv($this->alertRecipients));
+
+        if ($raw === '' || str_starts_with($raw, '$')) {
+            return [];
+        }
+
+        $list = array_values(array_unique(array_filter(array_map('trim', preg_split('/[\s,;]+/', $raw) ?: []))));
+
+        return $validOnly
+            ? array_values(array_filter($list, static fn(string $a) => filter_var($a, FILTER_VALIDATE_EMAIL) !== false))
+            : $list;
+    }
+
+    /**
+     * The journal a gateway's payments and refunds are entered in: its own, else the default,
+     * else empty — which refuses the entry with a message saying what to set.
+     */
+    public function getPaymentJournalFor(?string $gatewayHandle): string
+    {
+        $mapped = $gatewayHandle !== null ? trim((string)($this->paymentJournalByGateway[$gatewayHandle] ?? '')) : '';
+
+        return $mapped !== '' ? $mapped : trim($this->paymentJournalCode);
     }
 
     /**

@@ -9,6 +9,7 @@ use craft\helpers\Db;
 use craft\helpers\StringHelper;
 use DateTime;
 use GuzzleHttp\Client;
+use GuzzleHttp\ClientInterface;
 use justinholtweb\exactly\db\Table;
 use justinholtweb\exactly\models\Connection;
 use justinholtweb\exactly\models\LogEntry;
@@ -55,6 +56,12 @@ class Oauth extends Component
     public const REFRESH_LOCK_TIMEOUT = 10;
 
     public const STATE_SESSION_KEY = 'exactly.oauthState';
+
+    /**
+     * The HTTP client for the token endpoint. Null means Craft's own; tests put a Guzzle
+     * `MockHandler` client here.
+     */
+    public ?ClientInterface $client = null;
 
     private ?Connection $_connection = null;
     private bool $_loaded = false;
@@ -210,9 +217,12 @@ class Oauth extends Component
     /**
      * Refresh the access token, exactly once, however many callers ask at the same moment.
      *
+     * @param string|null $rejectedToken the access token Exact just answered 401 to, if that is why
+     *                                   this is being called; it is refreshed even if its stored
+     *                                   expiry says it is still good.
      * @throws Exception
      */
-    public function refresh(): Connection
+    public function refresh(?string $rejectedToken = null): Connection
     {
         $settings = Plugin::getInstance()->getSettings();
         $mutex = Craft::$app->getMutex();
@@ -230,7 +240,11 @@ class Oauth extends Component
                 throw new Exception(Craft::t('exactly', 'Exactly is not connected to Exact Online yet.'));
             }
 
-            if ($connection->accessTokenIsUsable()) {
+            // Usable by its expiry time, and not the token Exact just refused — either because
+            // another process refreshed while this one waited, or because nobody refused anything.
+            // A token Exact answered 401 to is refreshed however much time its timestamp says it
+            // has left: revoked early, or a clock that disagrees with Exact's.
+            if ($connection->accessTokenIsUsable() && ($rejectedToken === null || $connection->accessToken !== $rejectedToken)) {
                 return $connection;
             }
 
@@ -367,7 +381,7 @@ class Oauth extends Component
         $started = microtime(true);
 
         try {
-            $client = Craft::createGuzzleClient(['timeout' => 20]);
+            $client = $this->client ?? Craft::createGuzzleClient(['timeout' => 20]);
             $response = $client->post($url, ['form_params' => $params]);
             $raw = (string)$response->getBody();
             $body = json_decode($raw, true);
@@ -401,6 +415,19 @@ class Oauth extends Component
                 'message' => $message,
                 'request' => http_build_query($params),
             ]);
+
+            // Exact refusing a refresh is the one failure nobody notices: every push after it
+            // fails the same way, and the merchant hears about it from their accountant. Only a
+            // refusal (a 4xx from the token endpoint) — a network failure is not one, and retries.
+            if (
+                $action === 'oauth.refresh'
+                && $e instanceof \GuzzleHttp\Exception\RequestException
+                && $e->hasResponse()
+                && $e->getResponse()->getStatusCode() >= 400
+                && $e->getResponse()->getStatusCode() < 500
+            ) {
+                Plugin::getInstance()->getAlerts()->noteAuthFailure($message);
+            }
 
             throw new Exception($message, 0, $e);
         }

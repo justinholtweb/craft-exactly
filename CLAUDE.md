@@ -40,6 +40,11 @@ no feature gating anywhere in the code.
 - `{{%exactly_accounts}}` / `{{%exactly_items}}` — resolution caches, unique per division, so a
   repeat customer costs no call out of a 60-per-minute budget.
 - `{{%exactly_log}}` — the connection log.
+- `{{%exactly_payments}}` — payment entries, unique on `(transactionId, division)`: one Commerce
+  transaction is one bank/cash entry, the same guarantee `exactly_documents` gives invoices (keyed
+  on the transaction because an order can be paid in several captures).
+- `{{%exactly_alerts}}` — failure-alert latches, unique on `incident` (Erpy keys it on
+  `(connectionId, incident)`; Exactly has one connection, so no column).
 
 ### The three things that carry the design
 
@@ -58,6 +63,48 @@ no feature gating anywhere in the code.
   predicts that total from the mapped codes' percentages and compares it against
   `Order::getTotalPrice()`. Cents get a rounding line; a real gap refuses to send — and the refusal comes *before* the
   account and items are resolved, because resolving them can create them in Exact.
+
+### Payment entries (theme 2, 2026-10-09)
+
+`services\PaymentEntries` posts each successful capture/purchase (and refund) to
+`financialtransaction/BankEntries` or `CashEntries` with its lines inline. It keeps both invariants
+in its own shape: `buildPayload()` is the only place a transaction becomes a body (preview and post
+share it), and `claim()` (insert-first, conditional UPDATE, 15-minute `sending` window — the
+`Documents::claim()` shape on its own table, because the documents index is per order/kind) is the
+only place a payment row is created or moved to `sending`. A payment *waits* (attempt given back)
+until its invoice is sent **and processed** — the status is re-read via `Payments::refreshStatuses()`
+— because a draft is not an open item. `Invoices::runPush()` calls `queueForOrder()` on success;
+`Sync::runMaintenance()` reads statuses first, then `retryUnsent()`. Any attempt after the first
+looks the line's `Description` (order ref + transaction hash, unique) up in `*EntryLines` before
+posting: the guard for a POST whose answer was lost. Config gaps (`PaymentEntryException`) fail
+without spending an attempt. `paymentAmountSign` is a switch like `creditNoteSign` (unverified).
+Fees: Zo's reader, copied.
+
+### Failure alerts (ported from Erpy via Zo, 2026-10-09)
+
+`services\Alerts` is the family reference with the connection dimension dropped. Incidents:
+**failures** (failed documents + failed payment entries by `dateUpdated` inside the window,
+threshold to open, a quiet window to close), **stalled** (rows `queued`/`sending` past
+`alertStallHours`, plus — only for the `completed`/`paid` triggers — orders from the last 7 days past
+that age with no invoice row; measured, so it closes by itself), **auth** (signal from
+`Oauth::requestToken()` on a 4xx refresh and from `Api::request()` on a 401 that survived the forced
+refresh; cleared by `noteAuthSuccess()` on any 2xx; *also* measured open when the stored connection
+is no longer usable). Hooks: `Invoices::push()` and `PaymentEntries::register()` wrap the real work
+and call `afterSync()` in a `finally`; `exactly/sync/retry`, `/maintenance` and `exactly/alerts/check`
+run `check()`. `check()` does nothing without credentials and a stored connection. Do not change: the
+conditional-UPDATE claim/release, redaction before anything leaves, `webhookTarget()` (`helpers\Ip`
+is the family copy — keep it identical), the HMAC header, every path fail-open.
+
+### Order status (Orders index column and condition rule)
+
+`Documents::orderSummaries()` (PHP, two queries per page) and `Documents::orderStatusCondition()`
+(SQL, for `ExactStatusConditionRule::modifyQuery()`) define the same eight sets in the same
+precedence — failed > credited > paid > invoiced > inFlight > pending/skipped > none — for the
+*current division* only, and `tests/integration/orders.php` holds them to partitioning the fixtures
+identically. Change one, change both. The column is prefetched from
+`OrderQuery::EVENT_AFTER_POPULATE_ELEMENTS` on `element-indexes/*` requests; the rule is registered
+unconditionally. `SendToExact` goes through `Sync::schedule(..., alwaysQueue: true)`, so an invoiced
+or in-flight order pushes no job.
 
 ### Protocol notes (read, not guessed)
 
@@ -86,6 +133,13 @@ behaviour rather than the documentation.
 - A sales invoice created through the API is a **draft** (`Status` 10). A draft is not in the general
   ledger and not receivable — so "not on the receivables list" means "not booked", not "paid".
   Printing or sending it is what processes it.
+- Bank and cash entries: `financialtransaction/BankEntries` (bank **and** payment-service journals)
+  and `CashEntries`, lines posted inline as `BankEntryLines`/`CashEntryLines`. Header needs
+  `JournalCode`; a line needs `GLAccount` and `AmountFC`; `OurRef` is an **Int32** documented as
+  "Invoice number", and with `Account` it is what Exact matches to the open item. **Unverified**
+  (no live division): the line sign for money received (`paymentAmountSign`, default positive — the
+  docs only say opening balance + lines = closing balance) and whether Exact auto-matches on
+  `OurRef` alone or needs the line's account to be the debtors control account.
 - **Unverified:** whether credit-note (`Type` 8021) lines take positive or negative amounts. Exact's
   field reference does not say and no second implementation confirmed it, so it is a setting
   (`creditNoteSign`, default positive) rather than an assumption.
@@ -111,6 +165,13 @@ behaviour rather than the documentation.
 - **`stdout()` passes every extra argument to `Console::ansiFormat()`**, so a null colour is not "no
   colour" — it is an argument that throws in there.
 
+- **`Oauth::refresh()` used to return the stored token whenever its timestamp said it was still
+  good**, so the 401 retry re-sent the very token Exact had just refused. `refresh($rejectedToken)`
+  now refreshes that token regardless of its stored expiry (another process's fresh token is still
+  respected).
+- **`$row['col'] ?? 'x'` is `'x'` when the column is NULL** — the wrong tool for asserting a latch
+  column was released to null; use `array_key_exists`.
+
 See `[[craft-plugin-gotchas]]` in the shared memory for family-wide traps, and
 `[[craft-freshh-gotchas]]` for the sibling accounting integration — `encryptByKey()` returning raw
 binary and `OrderStatusEvent` carrying `$order` directly both came from there.
@@ -127,7 +188,19 @@ docker exec -w /var/www/html ddev-plugin-testing-web bash -lc \
   'find /var/www/craft-exactly/src -name "*.php" -print0 | xargs -0 -n1 php -l'
 ```
 
-**225 checks, 0 failures.** Self-cleaning (and scoped: cleanup deletes only the fixture division's
+```sh
+docker exec -w /var/www/html ddev-plugin-testing-web php /var/www/craft-exactly/tests/integration/payments.php  # payment entries, scripted Exact
+docker exec -w /var/www/html ddev-plugin-testing-web php /var/www/craft-exactly/tests/integration/orders.php    # Orders index column, condition rule, bulk action
+docker exec -w /var/www/html ddev-plugin-testing-web php /var/www/craft-exactly/tests/integration/alerts.php    # latch, mail, SSRF, webhook, auth signals, widget, console
+```
+
+`payments.php`, `orders.php` and `alerts.php` share `tests/integration/_support.php`: they put a
+Guzzle `MockHandler` client on the real `services\Api`/`services\Oauth` (`$client` properties), so
+the request, 401, rate-limit and logging code runs against a scripted Exact. Their HTTP checks hit
+the harness's own web server, whose saved settings have no connection for the run's fixture
+division, so they assert permissions, methods, CSRF and rendering only.
+
+**225 checks, 0 failures** in `checks.php`. Self-cleaning (and scoped: cleanup deletes only the fixture division's
 cache rows and log rows this run wrote, never a whole table), and it needs **no Exact Online account**: `FakeApi`
 replaces only `services\Api`, so the account resolver, the item resolver, the VAT determination, the
 payload builder, the ledger and the reconciliation arithmetic are all the real code running against a

@@ -2,7 +2,7 @@
 title: Configuration
 slug: configuration
 order: 20
-summary: Triggers, the invoice header, items and GL accounts, VAT mapping, reconciliation, customers, delivery and logging.
+summary: Triggers, the invoice header, items and GL accounts, VAT mapping, reconciliation, customers, delivery, payment entries, alerts and logging.
 ---
 
 Everything here is on **Settings → Plugins → Exactly**. No setting is required to save the screen —
@@ -236,6 +236,23 @@ cancelling it, switch it.
 
 **Read payment status back from Exact** and **Paid order status** — see
 [Usage](usage#payment-status).
+
+## Payment entries
+
+**Enter payments in Exact** (off by default) posts each successful capture, purchase and refund to
+Exact as a bank or cash entry line matched to the invoice (or credit note). It needs a **Payment
+journal** (or a **Journal per gateway**) and the **Receivables GL account** — your debtors control
+account. **Money received is** positive by default; **Book processor fees** adds the gateway's fee
+on the **Fee GL account**. Everything about it, including what is sent and when it waits, is in
+[Payment entries](payments).
+
+## Alerts
+
+Who is told when orders fail to reach Exact, invoicing stalls, or Exact refuses the connection:
+**Email alerts to**, an optional **Slack or Teams webhook URL** (with an optional signing secret),
+which incidents to alert on, the failure threshold and window, the stall age, and the quiet period
+after a recovery. **Send a test alert** checks both channels from the saved settings. See
+[Alerts](alerts).
 
 ## Logging
 

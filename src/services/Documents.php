@@ -49,6 +49,13 @@ class Documents extends Component
      */
     public const STALE_ATTEMPT_MINUTES = 15;
 
+    /**
+     * Per-request memo for the Orders index: order id => [status, invoice number].
+     *
+     * @var array<int, array{status: string, number: ?string}>
+     */
+    private array $_orderSummaries = [];
+
     // Reading
     // -------------------------------------------------------------------------
 
@@ -508,6 +515,204 @@ class Documents extends Component
             ->execute();
 
         return $this->getDocumentById($document->id) ?? $document;
+    }
+
+    // Order status (the Orders index column and condition rule)
+    // -------------------------------------------------------------------------
+
+    /**
+     * @return array<string, string> status => label, in precedence order
+     */
+    public static function orderStatusOptions(): array
+    {
+        return [
+            Document::ORDER_FAILED => Craft::t('exactly', 'Failed'),
+            Document::ORDER_CREDITED => Craft::t('exactly', 'Credited'),
+            Document::ORDER_PAID => Craft::t('exactly', 'Paid in Exact'),
+            Document::ORDER_INVOICED => Craft::t('exactly', 'Invoiced'),
+            Document::ORDER_IN_FLIGHT => Craft::t('exactly', 'Queued or sending'),
+            Document::ORDER_PENDING => Craft::t('exactly', 'Pending'),
+            Document::ORDER_SKIPPED => Craft::t('exactly', 'Skipped'),
+            Document::ORDER_NONE => Craft::t('exactly', 'Not invoiced'),
+        ];
+    }
+
+    /**
+     * Where each order stands with Exact in the current division, as one word.
+     *
+     * In precedence order; {@see orderStatusCondition()} builds exactly the same sets in SQL for
+     * the condition rule, and `tests/integration/orders.php` holds the two to agreeing:
+     *
+     * - `failed` — its invoice, its credit note or one of its payment entries failed.
+     * - `credited` — a credit note is in Exact.
+     * - `paid` — invoiced, and the payment read-back reports the invoice paid.
+     * - `invoiced` — the invoice is in Exact.
+     * - `inFlight` — queued or being sent.
+     * - `pending` / `skipped` — the invoice row's own status.
+     * - `none` — no invoice row at all: the "not yet invoiced" source.
+     *
+     * @param int[] $orderIds
+     * @return array<int, array{status: string, number: ?string}>
+     */
+    public function orderSummaries(array $orderIds): array
+    {
+        $orderIds = array_values(array_unique(array_filter(array_map('intval', $orderIds))));
+
+        if ($orderIds === []) {
+            return [];
+        }
+
+        $division = Plugin::getInstance()->getOauth()->getDivision();
+        $summaries = array_fill_keys($orderIds, ['status' => Document::ORDER_NONE, 'number' => null]);
+
+        if ($division === null) {
+            return $summaries;
+        }
+
+        // Two queries for any number of orders — this runs for every page of the Orders index.
+        $rows = (new Query())
+            ->select(['orderId', 'kind', 'status', 'paymentStatus', 'invoiceNumber'])
+            ->from([Table::DOCUMENTS])
+            ->where(['orderId' => $orderIds, 'division' => $division])
+            ->all();
+
+        $failed = array_fill_keys(array_map('intval', (new Query())
+            ->select(['orderId'])
+            ->from([Table::PAYMENTS])
+            ->where(['orderId' => $orderIds, 'division' => $division, 'status' => PaymentEntries::STATUS_FAILED])
+            ->column()), true);
+
+        $invoices = [];
+        $credited = [];
+
+        foreach ($rows as $row) {
+            $id = (int)$row['orderId'];
+
+            if ($row['status'] === Document::STATUS_FAILED) {
+                $failed[$id] = true;
+            }
+
+            if ($row['kind'] === Document::KIND_CREDIT_NOTE && $row['status'] === Document::STATUS_SENT) {
+                $credited[$id] = $row['invoiceNumber'];
+            }
+
+            if ($row['kind'] === Document::KIND_INVOICE) {
+                $invoices[$id] = $row;
+            }
+        }
+
+        foreach ($orderIds as $id) {
+            $invoice = $invoices[$id] ?? null;
+            $status = match (true) {
+                isset($failed[$id]) => Document::ORDER_FAILED,
+                array_key_exists($id, $credited) => Document::ORDER_CREDITED,
+                $invoice === null => Document::ORDER_NONE,
+                $invoice['status'] === Document::STATUS_SENT && $invoice['paymentStatus'] === Payments::STATUS_PAID => Document::ORDER_PAID,
+                $invoice['status'] === Document::STATUS_SENT => Document::ORDER_INVOICED,
+                in_array($invoice['status'], [Document::STATUS_QUEUED, Document::STATUS_SENDING], true) => Document::ORDER_IN_FLIGHT,
+                $invoice['status'] === Document::STATUS_SKIPPED => Document::ORDER_SKIPPED,
+                default => Document::ORDER_PENDING,
+            };
+
+            $summaries[$id] = [
+                'status' => $status,
+                'number' => $invoice !== null && $invoice['invoiceNumber'] !== null ? (string)$invoice['invoiceNumber'] : null,
+            ];
+        }
+
+        return $summaries;
+    }
+
+    /**
+     * @param int[] $orderIds
+     * @return array<int, string> order id => status
+     */
+    public function orderStatuses(array $orderIds): array
+    {
+        return array_map(static fn(array $summary) => $summary['status'], $this->orderSummaries($orderIds));
+    }
+
+    /**
+     * One order's summary, from a per-request memo that {@see prefetchOrderSummaries()} fills for
+     * a whole index page at once.
+     *
+     * @return array{status: string, number: ?string}
+     */
+    public function orderSummary(int $orderId): array
+    {
+        if (!isset($this->_orderSummaries[$orderId])) {
+            $this->prefetchOrderSummaries([$orderId]);
+        }
+
+        return $this->_orderSummaries[$orderId] ?? ['status' => Document::ORDER_NONE, 'number' => null];
+    }
+
+    /**
+     * @param int[] $orderIds
+     */
+    public function prefetchOrderSummaries(array $orderIds): void
+    {
+        $missing = array_diff(array_map('intval', $orderIds), array_keys($this->_orderSummaries));
+
+        if ($missing !== []) {
+            $this->_orderSummaries = $this->orderSummaries($missing) + $this->_orderSummaries;
+        }
+    }
+
+    public function resetOrderSummaries(): void
+    {
+        $this->_orderSummaries = [];
+    }
+
+    /**
+     * A WHERE condition on an order id column that is true for orders in exactly this status.
+     *
+     * Each status excludes every status above it in precedence, so the sets partition the orders:
+     * an order is in one of them and only one — the same answer {@see orderSummaries()} gives.
+     *
+     * @return array<int|string, mixed>
+     */
+    public function orderStatusCondition(string $status, string $idColumn = 'elements.id'): array
+    {
+        $division = Plugin::getInstance()->getOauth()->getDivision();
+        $nothing = ['in', $idColumn, (new Query())->select(['orderId'])->from([Table::DOCUMENTS])->where('0=1')];
+
+        if ($division === null) {
+            // No administration: nothing is anywhere in Exact, so every order is "not invoiced".
+            return $status === Document::ORDER_NONE ? ['not', $nothing] : $nothing;
+        }
+
+        $documents = fn(?string $kind, array|string|null $statuses, bool $paid = false) => (new Query())
+            ->select(['orderId'])
+            ->from([Table::DOCUMENTS])
+            ->where(['division' => $division])
+            ->andFilterWhere(['kind' => $kind, 'status' => $statuses])
+            ->andWhere($paid ? ['paymentStatus' => Payments::STATUS_PAID] : '1=1');
+
+        $failedSet = $documents(null, Document::STATUS_FAILED)->union(
+            (new Query())
+                ->select(['orderId'])
+                ->from([Table::PAYMENTS])
+                ->where(['division' => $division, 'status' => PaymentEntries::STATUS_FAILED]),
+            true,
+        );
+
+        $notFailed = ['not in', $idColumn, $failedSet];
+        $notCredited = ['not in', $idColumn, $documents(Document::KIND_CREDIT_NOTE, Document::STATUS_SENT)];
+        $invoice = fn(array|string|null $statuses, bool $paid = false) => ['in', $idColumn, $documents(Document::KIND_INVOICE, $statuses, $paid)];
+
+        return match ($status) {
+            Document::ORDER_FAILED => ['in', $idColumn, $failedSet],
+            Document::ORDER_CREDITED => ['and', ['in', $idColumn, $documents(Document::KIND_CREDIT_NOTE, Document::STATUS_SENT)], $notFailed],
+            Document::ORDER_PAID => ['and', $invoice(Document::STATUS_SENT, true), $notCredited, $notFailed],
+            Document::ORDER_INVOICED => ['and', $invoice(Document::STATUS_SENT), ['not', $invoice(Document::STATUS_SENT, true)], $notCredited, $notFailed],
+            Document::ORDER_IN_FLIGHT => ['and', $invoice([Document::STATUS_QUEUED, Document::STATUS_SENDING]), $notCredited, $notFailed],
+            Document::ORDER_SKIPPED => ['and', $invoice(Document::STATUS_SKIPPED), $notCredited, $notFailed],
+            Document::ORDER_PENDING => ['and', $invoice(Document::STATUS_PENDING), $notCredited, $notFailed],
+            Document::ORDER_NONE => ['and', ['not', $invoice(null)], $notCredited, $notFailed],
+            // An unknown status matches nothing, rather than everything.
+            default => $nothing,
+        };
     }
 
     /**

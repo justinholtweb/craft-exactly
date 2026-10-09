@@ -20,6 +20,11 @@ class Install extends Migration
         $this->createIndexes();
         $this->addForeignKeys();
 
+        // Failure alerts and payment registration (5.1.0). Defined once, in the migration that
+        // added them.
+        m261009_000000_alerts_and_payments::createAlertsTable($this);
+        m261009_000000_alerts_and_payments::createPaymentsTable($this);
+
         return true;
     }
 
@@ -28,6 +33,8 @@ class Install extends Migration
      */
     public function safeDown(): bool
     {
+        $this->dropTableIfExists(Table::PAYMENTS);
+        $this->dropTableIfExists(Table::ALERTS);
         $this->dropTableIfExists(Table::LOG);
         $this->dropTableIfExists(Table::ITEMS);
         $this->dropTableIfExists(Table::ACCOUNTS);

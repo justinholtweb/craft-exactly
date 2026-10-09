@@ -64,6 +64,23 @@
         </p>
     {% endfor %}
 
+    {% if registerPayments and paymentEntries|length %}
+        <p style="margin-top: 6px;"><strong>{{ 'Payments in Exact'|t('exactly') }}</strong></p>
+        {% for entry in paymentEntries %}
+            <p>
+                <span class="status {{ entry.getStatusColor() }}"></span>
+                {{ entry.getKindLabel() }} {{ entry.amount is not null ? entry.amount|currency(entry.currency ?? order.currency) : '' }}
+                <span class="light">
+                    {{ entry.getStatusLabel() }}{% if entry.entryNumber %} · {{ 'Entry {number}'|t('exactly', { number: entry.entryNumber }) }}{% endif %}
+                </span>
+                <a class="light" href="{{ url('exactly/payments/preview/' ~ entry.transactionId) }}">{{ 'Preview'|t('exactly') }}</a>
+            </p>
+            {% if entry.lastError and entry.status != 'sent' %}
+                <p class="light" style="white-space: pre-wrap;">{{ entry.lastError }}</p>
+            {% endif %}
+        {% endfor %}
+    {% endif %}
+
     <div class="buttons" style="margin: 8px 0 0; flex-wrap: wrap; gap: 6px;">
         <a class="btn" href="{{ url('exactly/documents/preview/' ~ order.id) }}">{{ 'Preview payload'|t('exactly') }}</a>
 
@@ -72,6 +89,10 @@
                 {{ invoice and invoice.isSent() ? 'Send again'|t('exactly') : 'Send to Exact Online'|t('exactly') }}
             </button>
             <button type="button" class="btn" id="exactly-queue">{{ 'Queue it'|t('exactly') }}</button>
+        {% endif %}
+
+        {% if canPush and connected and registerPayments and invoice and invoice.isSent() %}
+            <button type="button" class="btn" id="exactly-register-payments">{{ 'Enter payments'|t('exactly') }}</button>
         {% endif %}
 
         {% if canCredit and invoice and invoice.isSent() %}
@@ -124,6 +145,17 @@
     if (queueButton) {
         queueButton.addEventListener('click', function() {
             post('exactly/documents/queue', { orderId: orderId }, report);
+        });
+    }
+
+    var paymentsButton = document.getElementById('exactly-register-payments');
+    if (paymentsButton) {
+        paymentsButton.addEventListener('click', function() {
+            paymentsButton.classList.add('disabled');
+            post('exactly/payments/register', { orderId: orderId }, function(data) {
+                paymentsButton.classList.remove('disabled');
+                report(data);
+            });
         });
     }
 

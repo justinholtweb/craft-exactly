@@ -255,12 +255,14 @@ class Sync extends Component
      *
      * @return array{queued: bool, message: string}
      */
-    public function schedule(Order $order, int $delaySeconds = 0, string $kind = Document::KIND_INVOICE): array
+    public function schedule(Order $order, int $delaySeconds = 0, string $kind = Document::KIND_INVOICE, bool $alwaysQueue = false): array
     {
         $plugin = Plugin::getInstance();
         $settings = $plugin->getSettings();
 
-        if (!$settings->useQueue) {
+        // `$alwaysQueue` is the Orders index's bulk action: a hundred orders pushed inline is a
+        // request that times out halfway, whatever `useQueue` says.
+        if (!$settings->useQueue && !$alwaysQueue) {
             try {
                 $result = $plugin->getInvoices()->push($order, ['kind' => $kind]);
             } catch (RateLimitException $e) {
@@ -357,6 +359,33 @@ class Sync extends Component
             ->fixedOrder(true)
             ->limit(null)
             ->all();
+    }
+
+    /**
+     * How many completed orders have never been invoiced into the current division — the
+     * Dashboard widget's number. Capped, because nobody needs the exact count past a thousand and
+     * the anti-join is not free on a large store.
+     */
+    public function countUninvoicedOrders(int $cap = 1000): int
+    {
+        $division = Plugin::getInstance()->getOauth()->getDivision();
+
+        if ($division === null) {
+            return 0;
+        }
+
+        return count((new Query())
+            ->from(['o' => CommerceTable::ORDERS])
+            ->innerJoin(['e' => CraftTable::ELEMENTS], '[[e.id]] = [[o.id]]')
+            ->leftJoin(
+                ['d' => Table::DOCUMENTS],
+                '[[d.orderId]] = [[o.id]] AND [[d.division]] = :division AND [[d.kind]] = :kind AND [[d.status]] = :status',
+                [':division' => $division, ':kind' => Document::KIND_INVOICE, ':status' => Document::STATUS_SENT],
+            )
+            ->where(['d.id' => null, 'o.isCompleted' => true, 'e.dateDeleted' => null])
+            ->limit($cap)
+            ->select(['o.id'])
+            ->column());
     }
 
     /**
@@ -468,11 +497,24 @@ class Sync extends Component
     {
         $plugin = Plugin::getInstance();
 
-        return [
+        $result = [
             'pruned' => $plugin->getLog()->prune(),
             'retried' => $plugin->getSync()->retryFailed()['queued'],
+            // Read statuses back first: an invoice processed since the last run is what lets a
+            // waiting payment entry go through below.
             'payments' => $plugin->getPayments()->sync(),
+            'entries' => $plugin->getPaymentEntries()->retryUnsent(),
         ];
+
+        // Cron is what notices an incident clearing — or a stall — on a quiet day.
+        try {
+            $result['alerts'] = $plugin->getAlerts()->check();
+        } catch (\Throwable $e) {
+            Craft::warning('Exactly could not check alerts: ' . $e->getMessage(), __METHOD__);
+            $result['alerts'] = [];
+        }
+
+        return $result;
     }
 
     /**

@@ -64,6 +64,31 @@ failed. Sending a duplicate is possible, but only as a deliberate act with a con
 table and any warnings. It is built by the same code that does the sending, so a preview is not an
 approximation. Nothing is created in Exact by looking.
 
+### Enters the payments too
+
+Optionally, every successful Commerce payment becomes a bank (or cash) entry line in the journal you
+choose — Stripe's clearing journal, PayPal's, the till — matched to its invoice by customer and
+invoice number, so Exact shows the invoice settled and nobody matches a payout by hand. Refunds are
+matched to the credit note; processor fees can go on their own line so the entry nets to what
+reached the bank. A payment waits until its invoice is processed in Exact, is entered once per
+transaction however many times it is retried, and the **Payments** screen compares Commerce's
+captures with Exact's entries day by day. Payment status is still read back from Exact's
+receivables list as well.
+
+### Tells you when something is wrong
+
+One email — and optionally a Slack or Teams message, or a signed JSON webhook — when orders start
+failing to reach Exact, when invoicing stalls (the queue is not running), or when Exact refuses the
+connection; and one more when it clears. Never one per failure. An **Exact Online health** Dashboard
+widget shows the same at a glance.
+
+### Works from the Orders index
+
+An **Exact Online** column on Commerce's Orders index (invoice number and status), an **Exact Online
+status** filter for building a *Not yet invoiced* or *Failed* source, and a **Send to Exact Online**
+bulk action that queues the selected orders — through the same claim, so an invoiced order is never
+invoiced twice.
+
 ---
 
 ## Setting it up
@@ -145,7 +170,12 @@ php craft exactly/sync/order 1234             # send one order
 php craft exactly/sync/backfill --since=2026-01-01 --limit=250 --dry-run
 php craft exactly/sync/retry
 php craft exactly/sync/payments               # reconcile against Exact's open items
-php craft exactly/sync/maintenance            # prune, retry and reconcile — for cron
+php craft exactly/sync/maintenance            # prune, retry, reconcile, enter payments, check alerts — for cron
+
+php craft exactly/payments/preview --transaction=5678
+php craft exactly/payments/reconcile --days=7
+php craft exactly/alerts/check
+php craft exactly/alerts/test
 
 php craft exactly/log/tail 25
 php craft exactly/log/prune --days=30

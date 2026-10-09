@@ -1,0 +1,164 @@
+{% extends '_layouts/cp' %}
+{% import '_includes/forms' as forms %}
+
+{% set title = 'Payments in Exact Online'|t('exactly') %}
+{% set selectedSubnavItem = 'payments' %}
+
+{% block actionButton %}
+    {% if canPush %}
+        <div class="buttons">
+            <button type="button" class="btn" id="exactly-payments-retry">{{ 'Enter what is missing'|t('exactly') }}</button>
+        </div>
+    {% endif %}
+{% endblock %}
+
+{% block content %}
+    {% if not settings.registerPayments %}
+        <div class="pane" style="margin-bottom: 16px;">
+            <p class="warning">{{ 'Entering payments in Exact Online is switched off, so nothing below is being entered. Switch it on under Payment entries in Exactly’s settings.'|t('exactly') }}</p>
+        </div>
+    {% endif %}
+
+    <div class="flex" style="margin-bottom: 14px; gap: 10px; align-items: center;">
+        {{ forms.select({
+            id: 'exactly-days',
+            name: 'days',
+            options: [
+                { label: 'Last 7 days'|t('exactly'), value: 7 },
+                { label: 'Last 30 days'|t('exactly'), value: 30 },
+                { label: 'Last 90 days'|t('exactly'), value: 90 },
+                { label: 'Last 365 days'|t('exactly'), value: 365 }
+            ],
+            value: days
+        }) }}
+        <span class="light">{{ 'Commerce’s captures and refunds per day, against what Exactly entered in Exact. “Settled” counts that day’s paid orders Exact reports as paid (from the payment-status read-back).'|t('exactly') }}</span>
+    </div>
+
+    <table class="data fullwidth" id="exactly-reconciliation">
+        <thead>
+            <tr>
+                <th scope="col">{{ 'Day'|t('exactly') }}</th>
+                <th scope="col">{{ 'Captured in Commerce'|t('exactly') }}</th>
+                <th scope="col">{{ 'Entered in Exact'|t('exactly') }}</th>
+                <th scope="col">{{ 'Refunded in Commerce'|t('exactly') }}</th>
+                <th scope="col">{{ 'Refunds entered'|t('exactly') }}</th>
+                <th scope="col">{{ 'Not entered'|t('exactly') }}</th>
+                <th scope="col">{{ 'Settled'|t('exactly') }}</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in rows %}
+                {% set currency = row.currencies|length == 1 ? row.currencies|first : null %}
+                {% set balanced = (row.captured - row.entered)|abs < 0.005 and (row.refunded - row.refundsEntered)|abs < 0.005 %}
+                <tr data-date="{{ row.date }}">
+                    <th scope="row" class="nowrap">{{ row.date|date('short') }}</th>
+                    <td class="nowrap">
+                        {% if row.capturedCount %}
+                            {{ currency ? row.captured|currency(currency) : row.captured|number_format(2) }}
+                            <span class="light">({{ row.capturedCount }})</span>
+                        {% else %}<span class="light">—</span>{% endif %}
+                    </td>
+                    <td class="nowrap">
+                        {% if row.enteredCount %}
+                            <span class="status {{ balanced ? 'green' : 'orange' }}"></span>
+                            {{ currency ? row.entered|currency(currency) : row.entered|number_format(2) }}
+                            <span class="light">({{ row.enteredCount }})</span>
+                        {% else %}<span class="light">—</span>{% endif %}
+                    </td>
+                    <td class="nowrap">
+                        {% if row.refundedCount %}
+                            {{ currency ? row.refunded|currency(currency) : row.refunded|number_format(2) }}
+                            <span class="light">({{ row.refundedCount }})</span>
+                        {% else %}<span class="light">—</span>{% endif %}
+                    </td>
+                    <td class="nowrap">
+                        {% if row.refundsEnteredCount %}
+                            {{ currency ? row.refundsEntered|currency(currency) : row.refundsEntered|number_format(2) }}
+                            <span class="light">({{ row.refundsEnteredCount }})</span>
+                        {% else %}<span class="light">—</span>{% endif %}
+                    </td>
+                    <td class="nowrap">
+                        {% set gap = row.missing + row.failed + row.waiting %}
+                        {% if gap %}
+                            <span class="{{ row.failed ? 'error' : '' }}">{{ gap }}</span>
+                            <span class="light">
+                                {{ '{failed} failed, {waiting} waiting, {missing} not tried'|t('exactly', { failed: row.failed, waiting: row.waiting, missing: row.missing }) }}
+                            </span>
+                        {% else %}<span class="light">0</span>{% endif %}
+                    </td>
+                    <td class="nowrap">
+                        {% if row.orders %}{{ row.settled }} / {{ row.orders }}{% else %}<span class="light">—</span>{% endif %}
+                    </td>
+                </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+    <h2 style="margin-top: 28px;">{{ 'Not entered yet'|t('exactly') }}</h2>
+
+    {% if unsent|length %}
+        <table class="data fullwidth" id="exactly-unsent">
+            <thead>
+                <tr>
+                    <th scope="col">{{ 'Order'|t('exactly') }}</th>
+                    <th scope="col">{{ 'Kind'|t('exactly') }}</th>
+                    <th scope="col">{{ 'Amount'|t('exactly') }}</th>
+                    <th scope="col">{{ 'Status'|t('exactly') }}</th>
+                    <th scope="col">{{ 'Why'|t('exactly') }}</th>
+                    <th scope="col"></th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for entry in unsent %}
+                    <tr>
+                        <td class="nowrap">
+                            <a href="{{ url('commerce/orders/' ~ entry.orderId) }}">{{ entry.reference ?? ('#' ~ entry.orderId) }}</a>
+                        </td>
+                        <td>{{ entry.getKindLabel() }}</td>
+                        <td class="nowrap">{{ entry.amount is not null ? entry.amount|currency(entry.currency ?? 'EUR') : '—' }}</td>
+                        <td class="nowrap">
+                            <span class="status {{ entry.getStatusColor() }}"></span>
+                            {{ entry.getStatusLabel() }}
+                            {% if entry.attempts > 1 %}<span class="light">×{{ entry.attempts }}</span>{% endif %}
+                        </td>
+                        <td class="light" style="white-space: pre-wrap;">{{ entry.lastError ?? '—' }}</td>
+                        <td class="nowrap"><a href="{{ url('exactly/payments/preview/' ~ entry.transactionId) }}">{{ 'Preview'|t('exactly') }}</a></td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    {% else %}
+        <p class="light">{{ 'Every payment Exactly has seen is in Exact Online.'|t('exactly') }}</p>
+    {% endif %}
+{% endblock %}
+
+{% js %}
+(function() {
+    var days = document.getElementById('exactly-days');
+    if (days) {
+        days.addEventListener('change', function() {
+            var url = new URL(window.location.href);
+            url.searchParams.set('days', days.value);
+            window.location.href = url.toString();
+        });
+    }
+
+    var retry = document.getElementById('exactly-payments-retry');
+    if (retry) {
+        retry.addEventListener('click', function() {
+            retry.classList.add('disabled');
+            Craft.sendActionRequest('POST', 'exactly/payments/retry', { data: {} })
+                .then(function(response) {
+                    Craft.cp.displayNotice(response.data.message);
+                    window.location.reload();
+                })
+                .catch(function(error) {
+                    retry.classList.remove('disabled');
+                    var message = (error && error.response && error.response.data && error.response.data.message)
+                        || {{ 'Something went wrong.'|t('exactly')|json_encode|raw }};
+                    Craft.cp.displayError(message);
+                });
+        });
+    }
+})();
+{% endjs %}

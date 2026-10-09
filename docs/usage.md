@@ -2,7 +2,7 @@
 title: Usage
 slug: usage
 order: 30
-summary: How an order becomes an invoice, previewing, the order panel, credit notes, backfilling, payment status, the console and Twig.
+summary: How an order becomes an invoice, previewing, the order panel, the Orders index, credit notes, backfilling, payment status, the console and Twig.
 ---
 
 ## How an order becomes an invoice
@@ -56,6 +56,7 @@ one. **Open the record** goes to the document's detail screen.
 | Send again | Shown once the order is invoiced. Creates a **second** invoice, after a confirmation |
 | Queue it | Hands the order to the queue instead — useful for a large order on a slow connection |
 | Credit note | Shown once the order is invoiced. Issues a credit note, after a confirmation |
+| Enter payments | Shown once the order is invoiced, with [payment entries](payments) on. Enters the order's payments and refunds that are not in Exact yet; the panel lists each with its status and a Preview link |
 
 **Send again** is the only way to get a duplicate invoice, and it is deliberate. The document record
 then tracks the new invoice; the first one stays in Exact.
@@ -77,6 +78,24 @@ The three buttons along the top:
 A document's detail screen shows everything recorded about it, the payload that was actually sent,
 the last error, and the related log entries. **Stop tracking** removes the record from Craft only —
 an issued invoice is not Craft's to retract, and the invoice in Exact is untouched.
+
+## The Orders index
+
+Commerce's own **Orders** index gets three things:
+
+- **An Exact Online column.** Add it from the index's column picker. Each row shows where the order
+  stands in the current administration — *Failed*, *Credited*, *Paid in Exact*, *Invoiced* (with
+  the invoice number), *Queued or sending*, *Pending*, *Skipped* or *Not invoiced* — read with one
+  query per page, not one per row. *Failed* means the invoice, the credit note or one of its
+  payment entries failed: whatever needs a person.
+- **An "Exact Online status" filter**, for the index's condition builder and custom sources. Build a
+  **Not yet invoiced** source with *Exact Online status is one of Not invoiced*, or a **Needs a
+  look** source with *Failed*. The filter and the column are the same sets, so they never disagree.
+- **A "Send to Exact Online" bulk action** for people with *Send orders to Exact Online*. It queues
+  every selected completed order — always through the queue, staggered like a backfill — and skips
+  carts, orders already invoiced and orders being sent right now, saying how many it skipped. It goes
+  through the same claim as every other path, so selecting an invoiced order cannot invoice it
+  twice.
 
 ## Drafts
 
@@ -172,7 +191,15 @@ php craft exactly/sync/backfill --since=2026-01-01 --limit=250 --dry-run
 php craft exactly/sync/retry --limit=50       # re-queue failures with attempts left
 php craft exactly/sync/retry --limit=10 --now # retry them inline from the console instead
 php craft exactly/sync/payments --limit=200   # reconcile against Exact (default 100 documents)
-php craft exactly/sync/maintenance            # prune, retry and reconcile — for cron
+php craft exactly/sync/maintenance            # prune, retry, reconcile, enter waiting payments, check alerts — for cron
+
+php craft exactly/payments/preview --transaction=5678   # the entry for one transaction; posts nothing
+php craft exactly/payments/register --order=1234        # enter one order's payments now
+php craft exactly/payments/retry                        # everything failed (attempts left) or waiting
+php craft exactly/payments/reconcile --days=7           # Commerce vs Exact, per day
+
+php craft exactly/alerts/check                # evaluate the failure alerts, send what is owed
+php craft exactly/alerts/test                 # a sample through every configured channel
 
 php craft exactly/log/tail 25
 php craft exactly/log/prune --days=30
@@ -214,13 +241,13 @@ invoice.
 
 | Permission | Allows |
 | --- | --- |
-| View Exact Online documents | The order panel, and — with Commerce's *Manage orders* — the Documents screen |
-| ↳ Send orders to Exact Online | Send, Send again, Queue it, Backfill, Retry failures, Check payments, Stop tracking |
+| View Exact Online documents | The order panel, the Orders index column, the Dashboard widget, and — with Commerce's *Manage orders* — the Documents and Payments screens |
+| ↳ Send orders to Exact Online | Send, Send again, Queue it, Backfill, Retry failures, Check payments, Stop tracking, the Orders index's **Send to Exact Online** action, **Enter payments** and **Enter what is missing** |
 | ↳ Issue credit notes | The Credit note button |
 | View the connection log | The Log screen |
 
 Exactly's permissions add to Commerce's own order access; they do not stand in for it. Everything
 on the Documents screen, including its buttons, also needs Commerce's *Manage orders* permission.
 
-The settings screen, connecting and disconnecting, and pruning or clearing the log are for admins
-only. Reading the log is a permission; destroying the record of what was sent is not.
+The settings screen, connecting and disconnecting, **Send a test alert**, and pruning or clearing
+the log are for admins only. Reading the log is a permission; destroying the record of what was sent is not.

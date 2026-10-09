@@ -1,5 +1,52 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Payment entries.** With **Enter payments in Exact** on, every successful capture or purchase is
+  entered in Exact as a bank (or cash) entry line in the journal you choose — per gateway, or a
+  default — carrying the customer's account and the invoice number (`OurRef`), so Exact matches it
+  to the open invoice and shows it settled. Refunds are entered against the order's credit note.
+  Queued from Commerce's own transaction event, never on the checkout.
+- A payment waits, without spending an attempt, until its invoice is in Exact and **processed** (a
+  draft is not an open item); the invoice push and `exactly/sync/maintenance` pick it up. A refund
+  with no credit note to match is skipped with the reason.
+- One entry per transaction per administration: a unique index and the same insert-first claim
+  invoices use, plus a look-up of the line's unique description before any retry, so a POST whose
+  answer was lost is found rather than entered twice.
+- Optional **processor fees** as a second line on a fee account, read from the stored gateway
+  response (Stripe balance transaction, PayPal Checkout, PayPal NVP) or supplied by
+  `PaymentEntries::EVENT_DEFINE_PROCESSOR_FEE`. `PaymentEntries::EVENT_BEFORE_REGISTER` can change
+  or veto an entry.
+- A **Payments** screen comparing Commerce's captures and refunds with Exact's entries per day,
+  with everything not yet entered and an **Enter what is missing** button; a dry-run **preview** of
+  any transaction's entry; payments listed on the order panel with an **Enter payments** button;
+  `exactly/payments/preview`, `/register`, `/retry` and `/reconcile`.
+- **Failure alerts** (the family pattern, from Erpy): one email, and optionally a Slack, Teams or
+  signed JSON webhook, when orders fail to reach Exact, when invoicing stalls, or when Exact refuses
+  the connection — and one when it clears. Latched per incident with a quiet period; redacted;
+  webhooks only to public hosts, pinned, no redirects. Checked after every push and payment entry,
+  on every refused token, and by `exactly/alerts/check`, `exactly/sync/retry` and
+  `exactly/sync/maintenance`. **Send a test alert** (admins) and `exactly/alerts/test`.
+- An **Exact Online health** Dashboard widget.
+- On Commerce's Orders index: an **Exact Online** column (status and invoice number), an **Exact
+  Online status** condition rule for filters and custom sources (*Not invoiced*, *Failed*, *Paid in
+  Exact*, …), and a **Send to Exact Online** bulk action that queues the selected orders through the
+  usual claim.
+
+### Changed
+
+- `exactly/sync/maintenance` also enters payments that are waiting or failed, and checks the alerts.
+- A 401 now refreshes the token Exact refused even when its stored expiry says it is still good
+  (revoked early, or a clock that disagrees with Exact's); before, the retry reused the same token.
+
+### Fixed
+
+- The settings screen's buttons — **Test connection**, **List administrations**, **Disconnect**,
+  **Clear cached lookups** and the VIES check — did nothing: Craft prefixes every id on a plugin
+  settings screen with `settings-`, and the script looked them up without it.
+
 ## 5.0.0 — 2026-08-20
 
 Initial release.

@@ -678,6 +678,246 @@
 
 {# ------------------------------------------------------------------ #}
 <hr>
+<h2>{{ 'Payment entries'|t('exactly') }}</h2>
+
+<div class="pane">
+    <p>
+        {{ 'Enter every successful Commerce payment in Exact as a bank or cash entry line, matched to its invoice by customer and invoice number — and each refund matched to its credit note. Exact then shows the invoice as settled, and nobody has to match a Stripe or Mollie payout by hand. A payment waits until its invoice is processed in Exact: a draft invoice is not an open item, so there is nothing to match yet.'|t('exactly') }}
+    </p>
+</div>
+
+{{ forms.lightswitchField({
+    label: 'Enter payments in Exact'|t('exactly'),
+    instructions: 'Queued from every successful capture, purchase or refund; never on the checkout itself. Run `exactly/sync/maintenance` on a schedule to pick up payments waiting for their invoice.'|t('exactly'),
+    id: 'registerPayments',
+    name: 'registerPayments',
+    on: settings.registerPayments,
+    toggle: 'exactly-payment-entries'
+}) }}
+
+<div id="exactly-payment-entries" class="{{ settings.registerPayments ? '' : 'hidden' }}">
+    {{ forms.selectField({
+        label: 'Entry type'|t('exactly'),
+        instructions: 'Bank entries also cover payment-service journals, which is what a Stripe, Mollie or PayPal clearing journal usually is in Exact.'|t('exactly'),
+        id: 'paymentEntryType',
+        name: 'paymentEntryType',
+        options: [
+            { label: 'Bank entry'|t('exactly'), value: 'bank' },
+            { label: 'Cash entry'|t('exactly'), value: 'cash' }
+        ],
+        value: settings.paymentEntryType
+    }) }}
+
+    {{ forms.textField({
+        label: 'Payment journal'|t('exactly'),
+        instructions: 'The Exact journal code payments are entered in, for any gateway without its own below.'|t('exactly'),
+        id: 'paymentJournalCode',
+        name: 'paymentJournalCode',
+        value: settings.paymentJournalCode,
+        class: 'code',
+        size: 12,
+        errors: settings.getErrors('paymentJournalCode')
+    }) }}
+
+    {% set gateways = commerceReady ? craft.commerce.gateways.getAllGateways() : [] %}
+    {% if gateways|length %}
+        <h3>{{ 'Journal per gateway'|t('exactly') }}</h3>
+        <p class="light">{{ 'Optional. Stripe pays out to one clearing journal, PayPal holds a balance of its own; a journal per gateway keeps each one reconcilable against its own statement.'|t('exactly') }}</p>
+        {% for gateway in gateways %}
+            {{ forms.textField({
+                label: gateway.name,
+                id: 'paymentJournalByGateway-' ~ gateway.handle,
+                name: 'paymentJournalByGateway[' ~ gateway.handle ~ ']',
+                value: settings.paymentJournalByGateway[gateway.handle] ?? '',
+                placeholder: 'Journal code'|t('exactly'),
+                class: 'code',
+                size: 12
+            }) }}
+        {% endfor %}
+    {% endif %}
+
+    {{ forms.textField({
+        label: 'Receivables GL account'|t('exactly'),
+        instructions: 'The debtors control account the payment line is booked on — 1300 in most Dutch charts. Exact needs a ledger account on every entry line.'|t('exactly'),
+        id: 'paymentReceivablesGlAccountCode',
+        name: 'paymentReceivablesGlAccountCode',
+        value: settings.paymentReceivablesGlAccountCode,
+        class: 'code',
+        size: 12,
+        errors: settings.getErrors('paymentReceivablesGlAccountCode')
+    }) }}
+
+    {{ forms.selectField({
+        label: 'Money received is'|t('exactly'),
+        instructions: 'Exact’s reference only says that the opening balance plus the lines makes the closing balance, which reads as “money in is positive”. If payments come out doubling the receivable instead of settling it, change this. Refunds and fees always take the opposite sign.'|t('exactly'),
+        id: 'paymentAmountSign',
+        name: 'paymentAmountSign',
+        options: [
+            { label: 'Positive'|t('exactly'), value: 'positive' },
+            { label: 'Negative'|t('exactly'), value: 'negative' }
+        ],
+        value: settings.paymentAmountSign
+    }) }}
+
+    {{ forms.lightswitchField({
+        label: 'Enter refunds too'|t('exactly'),
+        instructions: 'Matched to the order’s credit note. A refund with no credit note to match — a partial refund, or credit notes switched off — is skipped with the reason, for you to book.'|t('exactly'),
+        id: 'registerRefunds',
+        name: 'registerRefunds',
+        on: settings.registerRefunds
+    }) }}
+
+    {{ forms.lightswitchField({
+        label: 'Book processor fees'|t('exactly'),
+        instructions: 'Adds the fee Stripe or PayPal kept as a second line on the same entry, so it nets to what reached the bank. Read from the gateway’s stored response; a payment whose response does not carry the fee is entered without one. Leave off if you already book fees from the payout report.'|t('exactly'),
+        id: 'recordProcessorFees',
+        name: 'recordProcessorFees',
+        on: settings.recordProcessorFees
+    }) }}
+
+    {{ forms.textField({
+        label: 'Fee GL account'|t('exactly'),
+        instructions: 'Ledger code for bank and payment-processor charges.'|t('exactly'),
+        id: 'paymentFeeGlAccountCode',
+        name: 'paymentFeeGlAccountCode',
+        value: settings.paymentFeeGlAccountCode,
+        class: 'code',
+        size: 12,
+        errors: settings.getErrors('paymentFeeGlAccountCode')
+    }) }}
+</div>
+
+{# ------------------------------------------------------------------ #}
+<hr>
+<h2>{{ 'Alerts'|t('exactly') }}</h2>
+
+<p class="light">{{ 'One message when something goes wrong, one when it has cleared — never one per failure. Checked after every push, the moment Exact refuses the connection, and by `php craft exactly/alerts/check` and `exactly/sync/maintenance`.'|t('exactly') }}</p>
+
+{{ forms.autosuggestField({
+    label: 'Email alerts to'|t('exactly'),
+    instructions: 'Addresses separated by commas, or an environment variable. Leave empty for no email.'|t('exactly'),
+    id: 'alertRecipients',
+    name: 'alertRecipients',
+    suggestEnvVars: true,
+    value: settings.alertRecipients,
+    errors: settings.getErrors('alertRecipients')
+}) }}
+
+{{ forms.autosuggestField({
+    label: 'Slack or Teams webhook URL'|t('exactly'),
+    instructions: 'Optional. An incoming-webhook URL — best kept in an environment variable, because the URL is the credential. Only public hosts are allowed and redirects are never followed.'|t('exactly'),
+    id: 'alertWebhookUrl',
+    name: 'alertWebhookUrl',
+    suggestEnvVars: true,
+    value: settings.alertWebhookUrl,
+    errors: settings.getErrors('alertWebhookUrl')
+}) }}
+
+{{ forms.selectField({
+    label: 'Webhook format'|t('exactly'),
+    id: 'alertWebhookFormat',
+    name: 'alertWebhookFormat',
+    options: [
+        { value: 'slack', label: 'Slack'|t('exactly') },
+        { value: 'teams', label: 'Microsoft Teams'|t('exactly') },
+        { value: 'json', label: 'Plain JSON (your own receiver)'|t('exactly') },
+    ],
+    value: settings.alertWebhookFormat,
+    errors: settings.getErrors('alertWebhookFormat')
+}) }}
+
+{{ forms.autosuggestField({
+    label: 'Webhook signing secret'|t('exactly'),
+    instructions: 'Optional. When set, each webhook carries `X-Exactly-Timestamp` and `X-Exactly-Signature: sha256=…`, an HMAC of `timestamp.body`, so your own receiver can verify it. Slack and Teams ignore it.'|t('exactly'),
+    id: 'alertWebhookSecret',
+    name: 'alertWebhookSecret',
+    suggestEnvVars: true,
+    value: settings.alertWebhookSecret
+}) }}
+
+{{ forms.lightswitchField({
+    label: 'Alert when orders fail to reach Exact'|t('exactly'),
+    instructions: 'Invoices, credit notes or payment entries Exact refused, or Exactly refused to send because the total did not reconcile.'|t('exactly'),
+    id: 'alertOnFailures',
+    name: 'alertOnFailures',
+    on: settings.alertOnFailures,
+    toggle: 'exactly-alert-failures'
+}) }}
+
+<div id="exactly-alert-failures" class="{{ settings.alertOnFailures ? '' : 'hidden' }}">
+    {{ forms.textField({
+        label: 'Failures that open an alert'|t('exactly'),
+        instructions: 'This many failures inside the window below. It closes again after a whole window with none.'|t('exactly'),
+        id: 'alertFailureThreshold',
+        name: 'alertFailureThreshold',
+        type: 'number',
+        size: 5,
+        value: settings.alertFailureThreshold,
+        errors: settings.getErrors('alertFailureThreshold')
+    }) }}
+
+    {{ forms.textField({
+        label: 'Window'|t('exactly'),
+        instructions: 'Minutes. Failures are counted inside it; the incident clears after a whole window with nothing new.'|t('exactly'),
+        id: 'alertWindowMinutes',
+        name: 'alertWindowMinutes',
+        type: 'number',
+        size: 5,
+        value: settings.alertWindowMinutes,
+        errors: settings.getErrors('alertWindowMinutes')
+    }) }}
+</div>
+
+{{ forms.lightswitchField({
+    label: 'Alert when invoicing stalls'|t('exactly'),
+    instructions: 'Documents or payments sitting in the queue, or — with an automatic trigger — recent orders with no invoice at all, past the age below. Usually means the queue is not running.'|t('exactly'),
+    id: 'alertOnStall',
+    name: 'alertOnStall',
+    on: settings.alertOnStall,
+    toggle: 'exactly-alert-stall'
+}) }}
+
+<div id="exactly-alert-stall" class="{{ settings.alertOnStall ? '' : 'hidden' }}">
+    {{ forms.textField({
+        label: 'Stalled after'|t('exactly'),
+        instructions: 'Hours.'|t('exactly'),
+        id: 'alertStallHours',
+        name: 'alertStallHours',
+        type: 'number',
+        size: 5,
+        value: settings.alertStallHours,
+        errors: settings.getErrors('alertStallHours')
+    }) }}
+</div>
+
+{{ forms.lightswitchField({
+    label: 'Alert when Exact refuses the connection'|t('exactly'),
+    instructions: 'A refused refresh token, a 401 that refreshing did not fix, or a connection that expired unused. Nothing is invoiced until somebody reconnects.'|t('exactly'),
+    id: 'alertOnAuthFailure',
+    name: 'alertOnAuthFailure',
+    on: settings.alertOnAuthFailure
+}) }}
+
+{{ forms.textField({
+    label: 'Quiet period after a recovery'|t('exactly'),
+    instructions: 'Minutes. An incident that comes straight back is reported when this ends, if it is still happening — so a flapping connection cannot fill an inbox.'|t('exactly'),
+    id: 'alertCooldownMinutes',
+    name: 'alertCooldownMinutes',
+    type: 'number',
+    size: 5,
+    value: settings.alertCooldownMinutes,
+    errors: settings.getErrors('alertCooldownMinutes')
+}) }}
+
+{% if currentUser and currentUser.admin %}
+    <div class="field">
+        <button type="button" class="btn" id="exactly-test-alert">{{ 'Send a test alert'|t('exactly') }}</button>
+        <span id="exactly-test-alert-note" class="light">{{ 'Uses the saved settings — save first.'|t('exactly') }}</span>
+    </div>
+{% endif %}
+
+{# ------------------------------------------------------------------ #}
+<hr>
 <h2>{{ 'Logging'|t('exactly') }}</h2>
 
 {{ forms.lightswitchField({
@@ -712,6 +952,12 @@
 
 {% js %}
 (function() {
+    // Plugin settings are run through `View::namespaceInputs(…, 'settings')`, which prefixes every
+    // id in the markup — but not this script. Look for both.
+    function byId(id) {
+        return document.getElementById(id) || document.getElementById('settings-' + id);
+    }
+
     function post(action, data, onDone) {
         Craft.sendActionRequest('POST', action, { data: data || {} })
             .then(function(response) { onDone(response.data); })
@@ -724,12 +970,12 @@
     }
 
     function on(id, handler) {
-        var el = document.getElementById(id);
+        var el = byId(id);
         if (el) { el.addEventListener('click', handler); }
     }
 
     on('exactly-test', function() {
-        var out = document.getElementById('exactly-test-result');
+        var out = byId('exactly-test-result');
         out.textContent = {{ 'Checking…'|t('exactly')|json_encode|raw }};
         post('exactly/settings/test', {}, function(data) {
             out.textContent = data ? data.message : '';
@@ -737,7 +983,7 @@
     });
 
     on('exactly-divisions', function() {
-        var out = document.getElementById('exactly-divisions-result');
+        var out = byId('exactly-divisions-result');
         out.textContent = {{ 'Loading…'|t('exactly')|json_encode|raw }};
         post('exactly/settings/divisions', {}, function(data) {
             if (!data || !data.divisions || !data.divisions.length) {
@@ -757,6 +1003,13 @@
         });
     });
 
+    on('exactly-test-alert', function() {
+        var note = byId('exactly-test-alert-note');
+        post('exactly/alerts/test', {}, function(data) {
+            if (data && note) { note.textContent = data.message; }
+        });
+    });
+
     on('exactly-clear-cache', function() {
         post('exactly/settings/clear-cache', {}, function(data) {
             if (data) { Craft.cp.displayNotice(data.message); }
@@ -764,8 +1017,8 @@
     });
 
     on('exactly-vat-check', function() {
-        var input = document.getElementById('exactly-vat-test');
-        var out = document.getElementById('exactly-vat-result');
+        var input = byId('exactly-vat-test');
+        var out = byId('exactly-vat-result');
         if (!input.value) { return; }
         out.textContent = {{ 'Asking VIES…'|t('exactly')|json_encode|raw }};
         post('exactly/settings/check-vat-number', { vatNumber: input.value }, function(data) {

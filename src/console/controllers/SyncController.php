@@ -186,14 +186,30 @@ class SyncController extends Controller
                 }
             }
 
-            return $this->pushInline($orders);
+            $exit = $this->pushInline($orders);
+            $this->checkAlerts();
+
+            return $exit;
         }
 
         $result = $plugin->getSync()->retryFailed($this->limit);
 
         $this->stdout("Re-queued {$result['queued']} documents.\n", Console::FG_GREEN);
+        $this->checkAlerts();
 
         return ExitCode::OK;
+    }
+
+    /**
+     * Cron runs this when nothing else is running, so it is where an incident is seen to clear.
+     */
+    private function checkAlerts(): void
+    {
+        foreach (Plugin::getInstance()->getAlerts()->check() as $result) {
+            if ($result['transition'] !== null) {
+                $this->stdout(sprintf('Alert %s: %s%s', $result['transition'], $result['incident'], PHP_EOL), Console::FG_YELLOW);
+            }
+        }
     }
 
     /**
@@ -218,18 +234,28 @@ class SyncController extends Controller
     }
 
     /**
-     * Everything a cron should do: prune the log, retry failures, reconcile payments.
+     * Everything a cron should do: prune the log, retry failures, reconcile payments, enter the
+     * payments still waiting, and check the failure alerts.
      */
     public function actionMaintenance(): int
     {
         $result = Plugin::getInstance()->getSync()->runMaintenance();
 
         $this->stdout(sprintf(
-            "Pruned %d log entries, re-queued %d documents, checked %d invoices.\n",
+            "Pruned %d log entries, re-queued %d documents, checked %d invoices, entered %d payments (%d waiting, %d failed).\n",
             $result['pruned'],
             $result['retried'],
             $result['payments']['checked'],
+            $result['entries']['sent'],
+            $result['entries']['waiting'],
+            $result['entries']['failed'],
         ), Console::FG_GREEN);
+
+        foreach ($result['alerts'] as $alert) {
+            if ($alert['transition'] !== null) {
+                $this->stdout(sprintf('Alert %s: %s%s', $alert['transition'], $alert['incident'], PHP_EOL), Console::FG_YELLOW);
+            }
+        }
 
         return ExitCode::OK;
     }

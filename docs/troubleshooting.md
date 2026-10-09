@@ -171,6 +171,38 @@ panel.
 If the invoice stops being tracked between the refund and the job running, the credit note's row is
 closed as *skipped* with *There is no Exact Online invoice to credit for this order.*
 
+## A payment says "Waiting for the invoice"
+
+Exact only matches a payment to an invoice that is **processed** — a draft is not an open item. The
+payment waits, without spending an attempt, until the invoice is processed: set a delivery method
+(printing or sending processes it) or process it in Exact, and the next `exactly/sync/maintenance`
+reads the invoice's status and enters the payment. A payment made before the invoice existed at all
+is queued again the moment the invoice push succeeds.
+
+## A payment failed with "No Exact Online journal is set…" or "Set the receivables GL account…"
+
+Payment entries need a journal and your debtors control account; nothing is guessed. Fill them in
+under **Payment entries** and press **Enter what is missing** on the Payments screen (or wait for
+maintenance). A failure like this does not use up a retry attempt.
+
+## Payments double the receivable instead of settling it
+
+Switch **Money received is** to *negative*. Exact's reference does not pin down the sign of a bank
+entry line, so it is a setting; see [Payment entries](payments#signs).
+
+## A refund was "skipped"
+
+A refund is matched to the order's credit note. With no credit note coming — a partial refund, or
+**Credit notes on refund** off — there is nothing to match it to, and entering it against the
+invoice would re-open money the customer still paid. Book it by hand, or issue a credit note and
+press **Enter payments** on the order.
+
+## An alert says invoicing has stalled
+
+Something has sat `queued` or `sending` for hours, or recent orders have no invoice at all. That is
+almost always the queue not running: open **Utilities → Queue Manager** (the alert links it), and
+make sure a queue runner or `php craft queue/run` on cron is in place.
+
 ## Credit notes double the invoice
 
 Switch **Credit note amounts** to the other sign. Exact's documentation does not say which one a

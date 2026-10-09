@@ -2942,7 +2942,7 @@ try {
     $sameOnPurpose = [
         'Client ID', 'Client secret', 'Exact Online', 'Exactly', 'Endpoint', 'Payload', 'PDF',
         'Peppol', 'Journal', 'Info', 'Status', 'Region', 'Action', 'Document', 'Documents',
-        '{total} documents',
+        '{total} documents', 'Microsoft Teams',
     ];
 
     $translationDir = dirname(__DIR__, 2) . '/src/translations';

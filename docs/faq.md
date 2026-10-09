@@ -88,6 +88,20 @@ Yes, with **Read payment status back from Exact** on. Each check re-reads the st
 Exact has not processed yet, then reads the receivables list: a processed invoice that is no longer
 owed is *paid*. A draft is reported as *draft*, never as paid. See [Usage](usage#payment-status).
 
+## Does it enter payments in Exact?
+
+Yes, if you switch it on. Every successful payment becomes a bank or cash entry line in the journal
+you choose, matched to the invoice by customer and invoice number, so Exact shows it settled;
+refunds are matched to the credit note, and processor fees can go on their own line. One entry per
+transaction, never two, and a **Payments** screen compares Commerce with Exact per day. See
+[Payment entries](payments).
+
+## Will it tell me when something goes wrong?
+
+Yes: one email (and optionally a Slack or Teams message) when orders start failing, invoicing
+stalls, or Exact refuses the connection — and one when it clears. There is an **Exact Online
+health** Dashboard widget too. See [Alerts](alerts).
+
 ## What happens when Exact's rate limit is hit?
 
 Nothing is lost. A queued push re-queues itself for when the budget refills; the order panel tells

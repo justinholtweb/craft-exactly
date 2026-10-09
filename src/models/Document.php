@@ -27,6 +27,19 @@ class Document extends Model
     public const STATUS_FAILED = 'failed';
     public const STATUS_SKIPPED = 'skipped';
 
+    /*
+     * Where an *order* stands with Exact, as one word, for the Orders index column and the
+     * "Exact Online status" condition rule. See `Documents::orderStatuses()`.
+     */
+    public const ORDER_FAILED = 'failed';
+    public const ORDER_CREDITED = 'credited';
+    public const ORDER_PAID = 'paid';
+    public const ORDER_INVOICED = 'invoiced';
+    public const ORDER_IN_FLIGHT = 'inFlight';
+    public const ORDER_PENDING = 'pending';
+    public const ORDER_SKIPPED = 'skipped';
+    public const ORDER_NONE = 'none';
+
     public ?int $id = null;
     public ?int $orderId = null;
     public ?int $division = null;

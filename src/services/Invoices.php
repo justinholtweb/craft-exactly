@@ -363,6 +363,19 @@ class Invoices extends Component
      */
     public function push(Order $order, array $options = []): array
     {
+        try {
+            return $this->runPush($order, $options);
+        } finally {
+            // Every push is a chance to notice trouble without cron. Fail-open: see afterSync().
+            Plugin::getInstance()->getAlerts()->afterSync();
+        }
+    }
+
+    /**
+     * The push itself; {@see push()} wraps it so every exit evaluates the alerts.
+     */
+    private function runPush(Order $order, array $options): array
+    {
         $plugin = Plugin::getInstance();
         $kind = $options['kind'] ?? Document::KIND_INVOICE;
         $force = $options['force'] ?? false;
@@ -428,6 +441,15 @@ class Invoices extends Component
 
             if ($deliveryWarning !== null) {
                 $warnings[] = $deliveryWarning;
+            }
+
+            // Payments made before the invoice existed (the usual case: the payment is what
+            // completed the order) waited for it; now they can be matched. Only queued, never
+            // posted inline — and a failure to queue them must not make the invoice look unsent.
+            try {
+                $plugin->getPaymentEntries()->queueForOrder((int)$order->id);
+            } catch (\Throwable $e) {
+                Craft::warning('Exactly could not queue the payments for order ' . $order->id . ': ' . $e->getMessage(), __METHOD__);
             }
 
             return [

@@ -1,0 +1,47 @@
+{% extends '_layouts/cp' %}
+
+{% set title = 'Payment entry preview'|t('exactly') %}
+{% set selectedSubnavItem = 'payments' %}
+{% set crumbs = [
+    { label: 'Exactly'|t('exactly'), url: url('exactly/documents') },
+    { label: 'Payments'|t('exactly'), url: url('exactly/payments') }
+] %}
+
+{% block content %}
+    <div class="pane" style="margin-bottom: 16px;">
+        <p>
+            {{ 'Order'|t('exactly') }}
+            <a href="{{ order.getCpEditUrl() }}"><strong>{{ order.reference ?? order.getShortNumber() }}</strong></a>
+            — {{ transaction.type }} {{ transaction.amount|currency(transaction.currency ?: order.currency) }}
+            <span class="light">{{ transaction.dateCreated ? transaction.dateCreated|datetime('short') : '' }}</span>
+        </p>
+        <p class="light">
+            {{ 'This is built by the same code that does the posting, so it is what Exact Online would actually receive. Nothing has been entered in Exact by opening this page.'|t('exactly') }}
+        </p>
+        {% if preview.entry %}
+            <p>
+                <span class="status {{ preview.entry.getStatusColor() }}"></span>
+                {{ preview.entry.getStatusLabel() }}
+                {% if preview.entry.entryNumber %}<span class="light">{{ 'Entry {number}'|t('exactly', { number: preview.entry.entryNumber }) }}</span>{% endif %}
+            </p>
+            {% if preview.entry.lastError %}
+                <p class="error" style="white-space: pre-wrap;">{{ preview.entry.lastError }}</p>
+            {% endif %}
+        {% endif %}
+    </div>
+
+    {% if preview.error %}
+        <div class="pane">
+            <p class="error" style="white-space: pre-wrap;">{{ preview.error }}</p>
+        </div>
+    {% else %}
+        {% for warning in preview.warnings %}
+            <p class="warning">{{ warning }}</p>
+        {% endfor %}
+
+        <div class="pane">
+            <h2 style="margin-top: 0;">POST {{ preview.endpoint }}</h2>
+            <pre class="code" style="white-space: pre-wrap; overflow-x: auto;">{{ json }}</pre>
+        </div>
+    {% endif %}
+{% endblock %}
