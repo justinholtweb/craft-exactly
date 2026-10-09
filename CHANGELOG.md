@@ -46,6 +46,11 @@
 - The settings screen's buttons — **Test connection**, **List administrations**, **Disconnect**,
   **Clear cached lookups** and the VIES check — did nothing: Craft prefixes every id on a plugin
   settings screen with `settings-`, and the script looked them up without it.
+- An **Exact Online status** filter whose chosen statuses had all since been renamed or removed
+  stopped filtering, so a saved custom source widened to every order — and re-saving it dropped
+  the values for good. The rule now keeps what was chosen; only statuses Exactly knows reach the
+  query, *is one of* nothing known matches no orders, and *is not one of* nothing known excludes
+  none.
 
 ## 5.0.0 — 2026-08-20
 

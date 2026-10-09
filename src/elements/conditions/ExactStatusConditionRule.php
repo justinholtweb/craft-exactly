@@ -43,16 +43,29 @@ class ExactStatusConditionRule extends BaseMultiSelectConditionRule implements E
     }
 
     /**
-     * Only the statuses Exactly knows: a hand-edited or stale condition cannot smuggle anything
-     * else into the query.
+     * Keeps what was chosen, as strings — including a status a later release renamed or removed.
+     * Stripping it here would turn "is one of [a removed status]" into "no filter" (a saved custom
+     * source silently widening to every order), and the next save of the source would lose the
+     * value for good. Only {@see knownValues()} ever reaches the query.
      *
      * @param string|string[] $values
      */
     public function setValues(array|string $values): void
     {
-        $known = array_keys(Documents::orderStatusOptions());
+        $values = array_filter((array)$values, static fn(mixed $value): bool => is_scalar($value) && (string)$value !== '');
 
-        parent::setValues(array_values(array_intersect((array)$values, $known)));
+        parent::setValues(array_values(array_unique(array_map('strval', $values))));
+    }
+
+    /**
+     * The chosen statuses Exactly still knows. A hand-edited or stale condition cannot smuggle
+     * anything else into the query.
+     *
+     * @return string[]
+     */
+    private function knownValues(): array
+    {
+        return array_values(array_intersect($this->getValues(), array_keys(Documents::orderStatusOptions())));
     }
 
     /**
@@ -74,9 +87,20 @@ class ExactStatusConditionRule extends BaseMultiSelectConditionRule implements E
      */
     public function modifyQuery(ElementQueryInterface $query): void
     {
-        $values = $this->getValues();
+        // Nothing chosen is no filter — Craft's convention for an empty rule.
+        if ($this->getValues() === []) {
+            return;
+        }
 
+        $values = $this->knownValues();
+
+        // Chosen, but none of it exists any more: "is one of" matches nothing, "is not one of"
+        // excludes nothing. Never no filter for "is one of".
         if ($values === []) {
+            if ($this->operator !== self::OPERATOR_NOT_IN) {
+                $query->andWhere('0=1');
+            }
+
             return;
         }
 
@@ -95,12 +119,21 @@ class ExactStatusConditionRule extends BaseMultiSelectConditionRule implements E
      */
     public function matchElement(ElementInterface $element): bool
     {
-        if (!$element instanceof Order || !$element->id) {
-            return $this->matchValue(Document::ORDER_NONE);
+        if ($this->getValues() === []) {
+            return true;
         }
 
-        $status = Plugin::getInstance()->getDocuments()->orderStatuses([$element->id])[$element->id] ?? Document::ORDER_NONE;
+        // Agrees with modifyQuery(): only known statuses count.
+        $known = $this->knownValues();
 
-        return $this->matchValue($status);
+        if (!$element instanceof Order || !$element->id) {
+            $status = Document::ORDER_NONE;
+        } else {
+            $status = Plugin::getInstance()->getDocuments()->orderStatuses([$element->id])[$element->id] ?? Document::ORDER_NONE;
+        }
+
+        $in = in_array($status, $known, true);
+
+        return $this->operator === self::OPERATOR_NOT_IN ? !$in : $in;
     }
 }

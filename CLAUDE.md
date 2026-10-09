@@ -103,8 +103,10 @@ precedence — failed > credited > paid > invoiced > inFlight > pending/skipped 
 *current division* only, and `tests/integration/orders.php` holds them to partitioning the fixtures
 identically. Change one, change both. The column is prefetched from
 `OrderQuery::EVENT_AFTER_POPULATE_ELEMENTS` on `element-indexes/*` requests; the rule is registered
-unconditionally. `SendToExact` goes through `Sync::schedule(..., alwaysQueue: true)`, so an invoiced
-or in-flight order pushes no job.
+unconditionally, and `setValues()` keeps stale values (only known ones reach SQL; chosen but none
+known is `0=1` for *in*, no filter for `ni`), so a removed status can never widen a saved source.
+`SendToExact` goes through `Sync::schedule(..., alwaysQueue: true)`, so an invoiced or in-flight
+order pushes no job.
 
 ### Protocol notes (read, not guessed)
 
